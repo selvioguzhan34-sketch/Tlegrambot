@@ -8,5 +8,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Test Crypto Jet
-        run: echo "Crypto Jet çalışıyor!"
+      - name: Python'u kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Requests'i kur
+        run: pip install requests
+
+      - name: Crypto Jet'i çalıştır
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: python bot.py
