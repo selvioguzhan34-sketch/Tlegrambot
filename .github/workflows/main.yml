@@ -1,25 +1,25 @@
-name: Crypto Jet Test
+name: Crypto Jet
 
 on:
   workflow_dispatch:
 
 jobs:
-  test:
+  bot:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Projeyi indir
+      - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Python'u kur
+      - name: Setup Python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
-      - name: Requests'i kur
+      - name: Install requests
         run: pip install requests
 
-      - name: Bot kodunu test et
+      - name: Run Crypto Jet
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        run: python -m py_compile bot.py
+        run: python bot.py
