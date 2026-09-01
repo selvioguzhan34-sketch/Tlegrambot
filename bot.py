@@ -32,6 +32,17 @@ while True:
 
             if text == "/start":
                 reply = "🚀 Crypto Jet çalışıyor!"
+
+            elif text == "/btc":
+                btc = requests.get(
+                    "https://api.coingecko.com/api/v3/simple/price",
+                    params={"ids": "bitcoin", "vs_currencies": "usd"},
+                    timeout=10
+                ).json()
+
+                price = btc["bitcoin"]["usd"]
+                reply = f"₿ Bitcoin fiyatı: ${price:,.2f}"
+
             else:
                 reply = f"Mesajını aldım: {text}"
 
