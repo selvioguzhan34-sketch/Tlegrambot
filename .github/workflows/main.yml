@@ -19,7 +19,7 @@ jobs:
       - name: Requests'i kur
         run: pip install requests
 
-      - name: Crypto Jet'i çalıştır
+      - name: Bot kodunu test et
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        run: python bot.py
+        run: python -m py_compile bot.py
