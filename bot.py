@@ -9,7 +9,7 @@ COINBASE = "https://api.exchange.coinbase.com"
 
 offset = 0
 
-print("🚀 Crypto Jet V4 başladı!", flush=True)
+print("🚀 Crypto Jet V5 başladı!", flush=True)
 
 
 def get_json(url, params=None, timeout=15):
@@ -18,7 +18,7 @@ def get_json(url, params=None, timeout=15):
         params=params,
         timeout=timeout,
         headers={
-            "User-Agent": "Crypto-Jet/4.0"
+            "User-Agent": "Crypto-Jet/5.0"
         }
     )
 
@@ -85,10 +85,7 @@ def build_ema_series(values, period):
     result = [current]
 
     for price in values[period:]:
-        current = (
-            (price - current) * multiplier
-        ) + current
-
+        current = ((price - current) * multiplier) + current
         result.append(current)
 
     return result
@@ -107,7 +104,6 @@ def macd(values):
     ema26_start = len(values) - len(ema26)
 
     for i, value in enumerate(ema12):
-
         absolute_index = start_index + i
         ema26_index = absolute_index - ema26_start
 
@@ -185,8 +181,7 @@ def get_btc_analysis():
     previous_volumes = volumes[-21:-1]
 
     average_volume = (
-        sum(previous_volumes)
-        / len(previous_volumes)
+        sum(previous_volumes) / len(previous_volumes)
         if previous_volumes
         else 0
     )
@@ -303,15 +298,15 @@ def format_btc_analysis(data):
     )
 
     return (
-        "🚀 <b>CRYPTO JET V4</b>\n"
+        "🚀 CRYPTO JET V5\n"
         "━━━━━━━━━━━━━━━━\n\n"
 
-        "₿ <b>BITCOIN</b>\n"
-        "⏱ Zaman dilimi: <b>1 Saat</b>\n\n"
+        "₿ BITCOIN\n"
+        "⏱ Zaman dilimi: 1 Saat\n\n"
 
-        f"💰 Fiyat: <b>${data['price']:,.2f}</b>\n\n"
+        f"💰 Fiyat: ${data['price']:,.2f}\n\n"
 
-        "📊 <b>TEKNİK GÖSTERGELER</b>\n"
+        "📊 TEKNİK GÖSTERGELER\n"
 
         f"EMA20: {data['ema20']:,.2f}\n"
         f"EMA50: {data['ema50']:,.2f}\n"
@@ -320,13 +315,14 @@ def format_btc_analysis(data):
         f"MACD: {macd_text}\n"
         f"Hacim: {data['volume_ratio']:.2f}x\n\n"
 
-        "🎯 <b>SONUÇ</b>\n"
+        "🎯 SONUÇ\n"
 
-        f"Sinyal: <b>{data['signal']}</b>\n"
-        f"Sinyal gücü: <b>%{data['strength']}</b>\n"
-        f"Skor: <b>{data['score']}</b>\n\n"
+        f"Sinyal: {data['signal']}\n"
+        f"Sinyal gücü: %{data['strength']}\n"
+        f"Skor: {data['score']}\n\n"
 
-        "📋 <b>ANALİZ NEDENLERİ</b>\n"
+        "📋 ANALİZ NEDENLERİ\n"
+
         f"{reasons}\n\n"
 
         "━━━━━━━━━━━━━━━━\n"
@@ -342,8 +338,7 @@ def send_message(chat_id, text):
         f"{API}/sendMessage",
         json={
             "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "HTML"
+            "text": text
         },
         timeout=15
     )
@@ -351,7 +346,6 @@ def send_message(chat_id, text):
     response.raise_for_status()
 
 
-# Eski bekleyen Telegram mesajlarını temizle.
 try:
 
     print(
@@ -439,8 +433,8 @@ while True:
             if text == "/start":
 
                 reply = (
-                    "🚀 <b>Crypto Jet V4 çalışıyor!</b>\n\n"
-                    "₿ <b>/btc</b>\n"
+                    "🚀 Crypto Jet V5 çalışıyor!\n\n"
+                    "₿ /btc\n"
                     "Bitcoin 1 saatlik teknik analiz."
                 )
 
@@ -463,14 +457,14 @@ while True:
                     )
 
                     reply = (
-                        "❌ <b>BTC analizi alınamadı.</b>\n\n"
+                        "❌ BTC analizi alınamadı.\n\n"
                         f"Hata: {e}"
                     )
 
             else:
 
                 reply = (
-                    "📌 <b>Crypto Jet V4</b>\n\n"
+                    "📌 Crypto Jet V5\n\n"
                     "₿ /btc — BTC 1 saatlik analiz"
                 )
 
