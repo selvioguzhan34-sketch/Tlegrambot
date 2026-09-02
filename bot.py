@@ -1,17 +1,15 @@
 import os
 import time
 import requests
-import math
 from datetime import datetime
 
 # =========================================================
-# CRYPTO JET V7.4
+# CRYPTO JET V7.5
 # =========================================================
 
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
-
 COINBASE_API = "https://api.exchange.coinbase.com"
 BINANCE_FAPI = "https://fapi.binance.com"
 
@@ -31,7 +29,7 @@ COINS = {
     "LTC": "LTC-USD",
 }
 
-# Coinbase -> Binance Futures
+# Coinbase coin adı -> Binance Futures sembolü
 BINANCE_SYMBOLS = {
     "BTC": "BTCUSDT",
     "ETH": "ETHUSDT",
@@ -47,16 +45,17 @@ BINANCE_SYMBOLS = {
 
 subscribers = set()
 paper_trades = []
-
-# Son gönderilen güçlü sinyaller
 last_alerts = {}
 
+
 # =========================================================
-# GENEL HTTP
+# HTTP
 # =========================================================
 
 def get_json(url, params=None, timeout=15):
+
     try:
+
         response = requests.get(
             url,
             params=params,
@@ -64,17 +63,24 @@ def get_json(url, params=None, timeout=15):
         )
 
         if response.status_code != 200:
+
             print(
-                "HTTP HATA:",
+                "❌ HTTP HATA:",
                 response.status_code,
-                response.text[:300]
+                response.text[:500]
             )
+
             return None
 
         return response.json()
 
     except Exception as e:
-        print("HTTP HATA:", e)
+
+        print(
+            "❌ HTTP BAĞLANTI HATASI:",
+            e
+        )
+
         return None
 
 
@@ -83,7 +89,9 @@ def get_json(url, params=None, timeout=15):
 # =========================================================
 
 def telegram(method, data=None):
+
     try:
+
         response = requests.post(
             f"{TELEGRAM_API}/{method}",
             data=data or {},
@@ -93,16 +101,22 @@ def telegram(method, data=None):
         return response.json()
 
     except Exception as e:
-        print("Telegram hatası:", e)
+
+        print(
+            "❌ TELEGRAM HATASI:",
+            e
+        )
+
         return None
 
 
 def send_message(chat_id, text):
+
     return telegram(
         "sendMessage",
         {
             "chat_id": chat_id,
-            "text": text,
+            "text": text
         }
     )
 
@@ -112,6 +126,7 @@ def send_message(chat_id, text):
 # =========================================================
 
 def ema(values, period):
+
     if len(values) < period:
         return None
 
@@ -120,8 +135,10 @@ def ema(values, period):
     result = sum(values[:period]) / period
 
     for price in values[period:]:
+
         result = (
-            (price - result) * multiplier
+            (price - result)
+            * multiplier
         ) + result
 
     return result
@@ -132,6 +149,7 @@ def ema(values, period):
 # =========================================================
 
 def rsi(values, period=14):
+
     if len(values) < period + 1:
         return None
 
@@ -139,25 +157,49 @@ def rsi(values, period=14):
     losses = []
 
     for i in range(1, len(values)):
-        change = values[i] - values[i - 1]
+
+        change = (
+            values[i]
+            - values[i - 1]
+        )
 
         if change > 0:
+
             gains.append(change)
             losses.append(0)
+
         else:
+
             gains.append(0)
             losses.append(abs(change))
 
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
+    avg_gain = (
+        sum(gains[:period])
+        / period
+    )
 
-    for i in range(period, len(gains)):
+    avg_loss = (
+        sum(losses[:period])
+        / period
+    )
+
+    for i in range(
+        period,
+        len(gains)
+    ):
+
         avg_gain = (
-            (avg_gain * (period - 1)) + gains[i]
+            (
+                avg_gain * (period - 1)
+            )
+            + gains[i]
         ) / period
 
         avg_loss = (
-            (avg_loss * (period - 1)) + losses[i]
+            (
+                avg_loss * (period - 1)
+            )
+            + losses[i]
         ) / period
 
     if avg_loss == 0:
@@ -165,7 +207,9 @@ def rsi(values, period=14):
 
     rs = avg_gain / avg_loss
 
-    return 100 - (100 / (1 + rs))
+    return 100 - (
+        100 / (1 + rs)
+    )
 
 
 # =========================================================
@@ -173,16 +217,22 @@ def rsi(values, period=14):
 # =========================================================
 
 def macd(values):
+
     if len(values) < 35:
         return None, None
 
     ema12 = ema(values, 12)
     ema26 = ema(values, 26)
 
-    if ema12 is None or ema26 is None:
+    if (
+        ema12 is None
+        or ema26 is None
+    ):
         return None, None
 
-    macd_line = ema12 - ema26
+    macd_line = (
+        ema12 - ema26
+    )
 
     return macd_line, None
 
@@ -191,17 +241,30 @@ def macd(values):
 # ATR
 # =========================================================
 
-def atr(highs, lows, closes, period=14):
+def atr(
+    highs,
+    lows,
+    closes,
+    period=14
+):
+
     if len(closes) < period + 1:
         return None
 
     trs = []
 
     for i in range(1, len(closes)):
+
         tr = max(
             highs[i] - lows[i],
-            abs(highs[i] - closes[i - 1]),
-            abs(lows[i] - closes[i - 1])
+            abs(
+                highs[i]
+                - closes[i - 1]
+            ),
+            abs(
+                lows[i]
+                - closes[i - 1]
+            )
         )
 
         trs.append(tr)
@@ -209,14 +272,23 @@ def atr(highs, lows, closes, period=14):
     if len(trs) < period:
         return None
 
-    return sum(trs[-period:]) / period
+    return (
+        sum(trs[-period:])
+        / period
+    )
 
 
 # =========================================================
 # ADX
 # =========================================================
 
-def adx(highs, lows, closes, period=14):
+def adx(
+    highs,
+    lows,
+    closes,
+    period=14
+):
+
     if len(closes) < period * 2:
         return None
 
@@ -225,22 +297,42 @@ def adx(highs, lows, closes, period=14):
     trs = []
 
     for i in range(1, len(closes)):
-        up_move = highs[i] - highs[i - 1]
-        down_move = lows[i - 1] - lows[i]
+
+        up_move = (
+            highs[i]
+            - highs[i - 1]
+        )
+
+        down_move = (
+            lows[i - 1]
+            - lows[i]
+        )
 
         plus = 0
         minus = 0
 
-        if up_move > down_move and up_move > 0:
+        if (
+            up_move > down_move
+            and up_move > 0
+        ):
             plus = up_move
 
-        if down_move > up_move and down_move > 0:
+        if (
+            down_move > up_move
+            and down_move > 0
+        ):
             minus = down_move
 
         tr = max(
             highs[i] - lows[i],
-            abs(highs[i] - closes[i - 1]),
-            abs(lows[i] - closes[i - 1])
+            abs(
+                highs[i]
+                - closes[i - 1]
+            ),
+            abs(
+                lows[i]
+                - closes[i - 1]
+            )
         )
 
         plus_dm.append(plus)
@@ -250,23 +342,44 @@ def adx(highs, lows, closes, period=14):
     if len(trs) < period:
         return None
 
-    tr_sum = sum(trs[-period:])
-    plus_sum = sum(plus_dm[-period:])
-    minus_sum = sum(minus_dm[-period:])
+    tr_sum = sum(
+        trs[-period:]
+    )
+
+    plus_sum = sum(
+        plus_dm[-period:]
+    )
+
+    minus_sum = sum(
+        minus_dm[-period:]
+    )
 
     if tr_sum == 0:
         return None
 
-    plus_di = 100 * plus_sum / tr_sum
-    minus_di = 100 * minus_sum / tr_sum
+    plus_di = (
+        100
+        * plus_sum
+        / tr_sum
+    )
 
-    denominator = plus_di + minus_di
+    minus_di = (
+        100
+        * minus_sum
+        / tr_sum
+    )
+
+    denominator = (
+        plus_di + minus_di
+    )
 
     if denominator == 0:
         return None
 
     dx = (
-        abs(plus_di - minus_di)
+        abs(
+            plus_di - minus_di
+        )
         / denominator
     ) * 100
 
@@ -278,7 +391,11 @@ def adx(highs, lows, closes, period=14):
 # =========================================================
 
 def get_klines(symbol):
-    url = f"{COINBASE_API}/products/{symbol}/candles"
+
+    url = (
+        f"{COINBASE_API}"
+        f"/products/{symbol}/candles"
+    )
 
     data = get_json(
         url,
@@ -290,12 +407,30 @@ def get_klines(symbol):
     if not data:
         return None
 
-    data = sorted(data, key=lambda x: x[0])
+    data = sorted(
+        data,
+        key=lambda x: x[0]
+    )
 
-    highs = [float(x[2]) for x in data]
-    lows = [float(x[1]) for x in data]
-    closes = [float(x[4]) for x in data]
-    volumes = [float(x[5]) for x in data]
+    highs = [
+        float(x[2])
+        for x in data
+    ]
+
+    lows = [
+        float(x[1])
+        for x in data
+    ]
+
+    closes = [
+        float(x[4])
+        for x in data
+    ]
+
+    volumes = [
+        float(x[5])
+        for x in data
+    ]
 
     return {
         "highs": highs,
@@ -310,48 +445,78 @@ def get_klines(symbol):
 # =========================================================
 
 def get_long_short(coin):
-    """
-    Binance Futures Global Long/Short Account Ratio
 
-    Örnek:
-    BTC -> BTCUSDT
-
-    Sonuç:
-    long_percent
-    short_percent
-    ratio
-    """
-
-    symbol = BINANCE_SYMBOLS.get(coin)
+    symbol = BINANCE_SYMBOLS.get(
+        coin
+    )
 
     if not symbol:
-        print("Binance sembol bulunamadı:", coin)
+
+        print(
+            "❌ Binance sembol yok:",
+            coin
+        )
+
         return None
 
     url = (
-        f"{BINANCE_FAPI}/futures/data/"
+        f"{BINANCE_FAPI}"
+        "/futures/data/"
         "globalLongShortAccountRatio"
+    )
+
+    params = {
+        "symbol": symbol,
+        "period": "1h",
+        "limit": 1
+    }
+
+    print(
+        f"🔎 LONG/SHORT İSTEK: "
+        f"{coin} -> {symbol}"
     )
 
     data = get_json(
         url,
-        params={
-            "symbol": symbol,
-            "period": "1h",
-            "limit": 1
-        }
+        params=params
     )
 
-    if not data or not isinstance(data, list):
+    # KRİTİK DEBUG
+    print(
+        f"🔎 LONG/SHORT CEVAP "
+        f"{coin}:",
+        data
+    )
+
+    if not data:
+
         print(
-            "Long/Short veri yok:",
-            coin,
-            symbol
+            f"❌ LONG/SHORT VERİ YOK: "
+            f"{coin}"
         )
+
+        return None
+
+    if not isinstance(
+        data,
+        list
+    ):
+
+        print(
+            f"❌ LONG/SHORT BEKLENMEYEN "
+            f"VERİ: {coin}"
+        )
+
         return None
 
     try:
+
         row = data[-1]
+
+        print(
+            f"📊 {coin} RAW:",
+            row
+        )
 
         long_account = float(
             row["longAccount"]
@@ -365,18 +530,30 @@ def get_long_short(coin):
             row["longShortRatio"]
         )
 
-        total = long_account + short_account
+        total = (
+            long_account
+            + short_account
+        )
 
         if total <= 0:
             return None
 
         long_percent = (
-            long_account / total
+            long_account
+            / total
         ) * 100
 
         short_percent = (
-            short_account / total
+            short_account
+            / total
         ) * 100
+
+        print(
+            f"✅ {coin} "
+            f"LONG=%{long_percent:.2f} "
+            f"SHORT=%{short_percent:.2f} "
+            f"RATIO={ratio:.4f}"
+        )
 
         return {
             "long": long_percent,
@@ -385,9 +562,10 @@ def get_long_short(coin):
         }
 
     except Exception as e:
+
         print(
-            "Long/Short parse hatası:",
-            coin,
+            f"❌ LONG/SHORT PARSE "
+            f"HATASI {coin}:",
             e
         )
 
@@ -395,7 +573,7 @@ def get_long_short(coin):
 
 
 # =========================================================
-# SİNYAL HESAPLAMA
+# SİNYAL
 # =========================================================
 
 def calculate_signal(
@@ -415,18 +593,21 @@ def calculate_signal(
     price = closes[-1]
 
     # EMA
-    if ema20 and ema50:
+    if (
+        ema20 is not None
+        and ema50 is not None
+    ):
 
         if price > ema20:
             long_score += 15
 
-        if price < ema20:
+        elif price < ema20:
             short_score += 15
 
         if ema20 > ema50:
             long_score += 15
 
-        if ema20 < ema50:
+        elif ema20 < ema50:
             short_score += 15
 
     # RSI
@@ -459,7 +640,10 @@ def calculate_signal(
                 short_score += 10
 
     # Volume
-    if volume_avg and volume_now:
+    if (
+        volume_avg
+        and volume_now
+    ):
 
         if volume_now > volume_avg:
 
@@ -469,13 +653,15 @@ def calculate_signal(
             elif short_score > long_score:
                 short_score += 10
 
-    total = max(
+    strength = max(
         long_score,
         short_score
     )
 
-    if total > 100:
-        total = 100
+    strength = min(
+        strength,
+        100
+    )
 
     if long_score > short_score:
         direction = "LONG"
@@ -486,16 +672,21 @@ def calculate_signal(
     else:
         direction = "NEUTRAL"
 
-    return direction, total
+    return direction, strength
 
 
 # =========================================================
 # COIN ANALİZİ
 # =========================================================
 
-def analyze_coin(name, symbol):
+def analyze_coin(
+    name,
+    symbol
+):
 
-    candles = get_klines(symbol)
+    candles = get_klines(
+        symbol
+    )
 
     if not candles:
         return None
@@ -510,12 +701,24 @@ def analyze_coin(name, symbol):
 
     price = closes[-1]
 
-    ema20 = ema(closes, 20)
-    ema50 = ema(closes, 50)
+    ema20 = ema(
+        closes,
+        20
+    )
 
-    rsi_value = rsi(closes, 14)
+    ema50 = ema(
+        closes,
+        50
+    )
 
-    macd_value, _ = macd(closes)
+    rsi_value = rsi(
+        closes,
+        14
+    )
+
+    macd_value, _ = macd(
+        closes
+    )
 
     atr_value = atr(
         highs,
@@ -538,53 +741,82 @@ def analyze_coin(name, symbol):
         / len(volumes[-20:])
     )
 
-    direction, strength = calculate_signal(
-        closes,
-        ema20,
-        ema50,
-        rsi_value,
-        macd_value,
-        adx_value,
-        volume_now,
-        volume_avg
+    direction, strength = (
+        calculate_signal(
+            closes,
+            ema20,
+            ema50,
+            rsi_value,
+            macd_value,
+            adx_value,
+            volume_now,
+            volume_avg
+        )
     )
 
-    # KRİTİK:
-    # Artık BTC-USD -> BTCUSDT dönüşümü
-    # get_long_short() içinde yapılıyor.
-    long_short = get_long_short(name)
+    # Binance Long/Short
+    long_short = get_long_short(
+        name
+    )
 
     if long_short:
-        long_percent = long_short["long"]
-        short_percent = long_short["short"]
-        ls_ratio = long_short["ratio"]
+
+        long_percent = (
+            long_short["long"]
+        )
+
+        short_percent = (
+            long_short["short"]
+        )
+
+        ls_ratio = (
+            long_short["ratio"]
+        )
+
     else:
+
         long_percent = None
         short_percent = None
         ls_ratio = None
 
     return {
+
         "name": name,
+
         "symbol": symbol,
+
         "price": price,
+
         "ema20": ema20,
+
         "ema50": ema50,
+
         "rsi": rsi_value,
+
         "macd": macd_value,
+
         "atr": atr_value,
+
         "adx": adx_value,
+
         "volume": volume_now,
+
         "volume_avg": volume_avg,
+
         "long": long_percent,
+
         "short": short_percent,
+
         "ls_ratio": ls_ratio,
+
         "direction": direction,
+
         "strength": strength
     }
 
 
 # =========================================================
-# FORMAT
+# NORMAL RAPOR
 # =========================================================
 
 def format_coin(result):
@@ -592,58 +824,70 @@ def format_coin(result):
     if not result:
         return "❌ Analiz alınamadı."
 
-    name = result["name"]
-
-    price = result["price"]
-    rsi_value = result["rsi"]
-    macd_value = result["macd"]
-    adx_value = result["adx"]
-    strength = result["strength"]
-    direction = result["direction"]
-
     long_value = result["long"]
     short_value = result["short"]
     ratio = result["ls_ratio"]
 
     if long_value is None:
+
         long_text = "N/A"
         short_text = "N/A"
         ratio_text = "N/A"
+
     else:
-        long_text = f"%{long_value:.1f}"
-        short_text = f"%{short_value:.1f}"
-        ratio_text = f"{ratio:.2f}"
+
+        long_text = (
+            f"%{long_value:.1f}"
+        )
+
+        short_text = (
+            f"%{short_value:.1f}"
+        )
+
+        ratio_text = (
+            f"{ratio:.2f}"
+        )
+
+    direction = result[
+        "direction"
+    ]
 
     if direction == "LONG":
         signal_icon = "🟢"
+
     elif direction == "SHORT":
         signal_icon = "🔴"
+
     else:
         signal_icon = "⚪"
 
     return (
-        f"🚀 CRYPTO JET V7.4\n"
-        f"━━━━━━━━━━━━━━━━\n\n"
+        "🚀 CRYPTO JET V7.5\n"
+        "━━━━━━━━━━━━━━━━\n\n"
 
-        f"₿ {name}\n"
-        f"⏱ Zaman dilimi: 1 Saat\n\n"
+        f"₿ {result['name']}\n"
+        "⏱ Zaman dilimi: 1 Saat\n\n"
 
-        f"💰 Fiyat: ${price:,.2f}\n\n"
+        f"💰 Fiyat: "
+        f"${result['price']:,.2f}\n\n"
 
-        f"📊 TEKNİK ANALİZ\n"
+        "📊 TEKNİK ANALİZ\n"
         f"EMA20: {result['ema20']:.2f}\n"
         f"EMA50: {result['ema50']:.2f}\n"
-        f"RSI: {rsi_value:.2f}\n"
-        f"MACD: {macd_value:.4f}\n"
-        f"ADX: {adx_value:.2f}\n\n"
+        f"RSI: {result['rsi']:.2f}\n"
+        f"MACD: {result['macd']:.4f}\n"
+        f"ADX: {result['adx']:.2f}\n\n"
 
-        f"⚔️ LONG / SHORT\n"
+        "⚔️ LONG / SHORT\n"
         f"🟢 Long: {long_text}\n"
         f"🔴 Short: {short_text}\n"
         f"📐 Oran: {ratio_text}\n\n"
 
-        f"{signal_icon} SİNYAL: {direction}\n"
-        f"💪 Sinyal Gücü: %{strength}\n"
+        f"{signal_icon} SİNYAL: "
+        f"{direction}\n"
+
+        f"💪 Sinyal Gücü: "
+        f"%{result['strength']}"
     )
 
 
@@ -651,7 +895,9 @@ def format_coin(result):
 # JET ALERT
 # =========================================================
 
-def get_alert_level(strength):
+def get_alert_level(
+    strength
+):
 
     if strength >= 95:
         return "🚀 JET ALERT — EXTREME"
@@ -670,36 +916,54 @@ def send_jet_alert(result):
     if not result:
         return
 
-    direction = result["direction"]
-    strength = result["strength"]
-    name = result["name"]
+    direction = result[
+        "direction"
+    ]
 
-    if direction not in ("LONG", "SHORT"):
+    strength = result[
+        "strength"
+    ]
+
+    name = result[
+        "name"
+    ]
+
+    if direction not in (
+        "LONG",
+        "SHORT"
+    ):
         return
 
     if strength < 85:
         return
 
-    level = get_alert_level(strength)
+    level = get_alert_level(
+        strength
+    )
 
     if not level:
         return
 
-    current_signal = f"{direction}_{strength}"
+    previous = last_alerts.get(
+        name
+    )
 
-    previous = last_alerts.get(name)
-
-    # Aynı yönde güçlü sinyali sürekli gönderme
     if previous:
-        previous_direction = previous["direction"]
-        previous_strength = previous["strength"]
 
-        # Aynı yön ve hâlâ aynı alarm bölgesindeyse sustur
+        previous_direction = (
+            previous["direction"]
+        )
+
+        previous_strength = (
+            previous["strength"]
+        )
+
         if (
             previous_direction == direction
-            and previous_strength >= 85
-            and strength < previous_strength + 3
+            and strength
+            < previous_strength + 3
         ):
+
             return
 
     last_alerts[name] = {
@@ -708,47 +972,66 @@ def send_jet_alert(result):
     }
 
     if direction == "LONG":
+
         emoji = "🟢"
         action = "LONG / YÜKSELİŞ"
+
     else:
+
         emoji = "🔴"
         action = "SHORT / DÜŞÜŞ"
 
-    long_value = result["long"]
-    short_value = result["short"]
+    if result["long"] is None:
 
-    if long_value is None:
         long_text = "N/A"
         short_text = "N/A"
+
     else:
-        long_text = f"%{long_value:.1f}"
-        short_text = f"%{short_value:.1f}"
+
+        long_text = (
+            f"%{result['long']:.1f}"
+        )
+
+        short_text = (
+            f"%{result['short']:.1f}"
+        )
 
     message = (
         f"{level}\n"
-        f"━━━━━━━━━━━━━━━━\n\n"
+        "━━━━━━━━━━━━━━━━\n\n"
 
         f"⚡ {name}\n\n"
 
-        f"{emoji} SİNYAL: {action}\n"
-        f"💪 Güç: %{strength}\n\n"
+        f"{emoji} SİNYAL: "
+        f"{action}\n"
 
-        f"⚔️ LONG / SHORT\n"
-        f"🟢 Long: {long_text}\n"
-        f"🔴 Short: {short_text}\n\n"
+        f"💪 Güç: "
+        f"%{strength}\n\n"
 
-        f"⏱ Zaman dilimi: 1 Saat\n"
-        f"🤖 Crypto Jet otomatik taraması"
+        "⚔️ LONG / SHORT\n"
+
+        f"🟢 Long: "
+        f"{long_text}\n"
+
+        f"🔴 Short: "
+        f"{short_text}\n\n"
+
+        "⏱ Zaman dilimi: 1 Saat\n"
+
+        "🤖 Crypto Jet otomatik taraması"
     )
 
     print(
-        "ALARM:",
+        "🚨 JET ALERT:",
         name,
         direction,
         strength
     )
 
-    for chat_id in list(subscribers):
+    for chat_id in list(
+        subscribers
+    ):
+
         send_message(
             chat_id,
             message
@@ -759,93 +1042,150 @@ def send_jet_alert(result):
 # SİNYAL KONTROL
 # =========================================================
 
-def check_new_signals(results):
+def check_new_signals(
+    results
+):
 
     for result in results:
 
         if not result:
             continue
 
-        name = result["name"]
-        strength = result["strength"]
-        direction = result["direction"]
+        name = result[
+            "name"
+        ]
 
-        # Güçlü değilse eski alarmı temizle
-        # Böylece sinyal tekrar %85+ olduğunda
-        # yeniden alarm verebilir.
+        strength = result[
+            "strength"
+        ]
+
+        direction = result[
+            "direction"
+        ]
+
         if (
             strength < 85
-            or direction not in ("LONG", "SHORT")
+            or direction
+            not in (
+                "LONG",
+                "SHORT"
+            )
         ):
+
             if name in last_alerts:
                 del last_alerts[name]
 
             continue
 
-        send_jet_alert(result)
+        send_jet_alert(
+            result
+        )
 
 
 # =========================================================
 # PAPER TRADING
 # =========================================================
 
-def update_paper_trades(results):
+def update_paper_trades(
+    results
+):
 
     for result in results:
 
         if not result:
             continue
 
-        name = result["name"]
-        direction = result["direction"]
-        strength = result["strength"]
-        price = result["price"]
+        name = result[
+            "name"
+        ]
+
+        direction = result[
+            "direction"
+        ]
+
+        strength = result[
+            "strength"
+        ]
+
+        price = result[
+            "price"
+        ]
 
         if strength < 85:
             continue
 
-        if direction not in ("LONG", "SHORT"):
+        if direction not in (
+            "LONG",
+            "SHORT"
+        ):
             continue
 
-        # Aynı coin için açık işlem var mı?
         existing = None
 
         for trade in paper_trades:
+
             if (
                 trade["coin"] == name
                 and trade["open"]
             ):
+
                 existing = trade
                 break
 
         if existing:
-            # Yön değiştiyse kapat
-            if existing["direction"] != direction:
 
-                entry = existing["entry"]
+            if (
+                existing["direction"]
+                != direction
+            ):
 
-                if existing["direction"] == "LONG":
+                entry = existing[
+                    "entry"
+                ]
+
+                if (
+                    existing["direction"]
+                    == "LONG"
+                ):
+
                     pnl = (
-                        (price - entry)
+                        (
+                            price
+                            - entry
+                        )
                         / entry
                     ) * 100
+
                 else:
+
                     pnl = (
-                        (entry - price)
+                        (
+                            entry
+                            - price
+                        )
                         / entry
                     ) * 100
 
-                existing["open"] = False
-                existing["exit"] = price
-                existing["pnl"] = pnl
+                existing[
+                    "open"
+                ] = False
+
+                existing[
+                    "exit"
+                ] = price
+
+                existing[
+                    "pnl"
+                ] = pnl
 
                 print(
-                    "Paper trade kapandı:",
+                    "📕 Paper trade kapandı:",
                     name,
                     pnl
                 )
 
         else:
+
             paper_trades.append(
                 {
                     "coin": name,
@@ -854,12 +1194,13 @@ def update_paper_trades(results):
                     "exit": None,
                     "pnl": 0,
                     "open": True,
-                    "time": datetime.now().isoformat()
+                    "time":
+                        datetime.now().isoformat()
                 }
             )
 
             print(
-                "Paper trade açıldı:",
+                "📗 Paper trade açıldı:",
                 name,
                 direction,
                 price
@@ -867,27 +1208,34 @@ def update_paper_trades(results):
 
 
 # =========================================================
-# OTOMATİK TARAMA
+# TÜM COİNLERİ TARA
 # =========================================================
 
 def scan_all():
 
     print(
         "\n"
-        "==============================\n"
-        "CRYPTO JET TARAMA BAŞLADI\n"
-        "=============================="
+        "================================"
+    )
+
+    print(
+        "🚀 CRYPTO JET TARAMA"
+    )
+
+    print(
+        "================================"
     )
 
     results = []
 
-    for name, symbol in COINS.items():
+    for name, symbol in (
+        COINS.items()
+    ):
 
         try:
 
             print(
-                "Taranıyor:",
-                name
+                f"\n🔍 Taranıyor: {name}"
             )
 
             result = analyze_coin(
@@ -896,46 +1244,60 @@ def scan_all():
             )
 
             if result:
-                results.append(result)
+
+                results.append(
+                    result
+                )
 
                 print(
-                    name,
-                    result["direction"],
-                    result["strength"],
-                    "L/S:",
-                    result["long"],
-                    result["short"]
+                    f"📈 {name} "
+                    f"{result['direction']} "
+                    f"%{result['strength']} "
+                    f"L/S: "
+                    f"{result['long']} / "
+                    f"{result['short']}"
                 )
 
         except Exception as e:
 
             print(
-                name,
-                "ANALİZ HATASI:",
+                f"❌ {name} ANALİZ HATASI:",
                 e
             )
 
     return results
 
 
+# =========================================================
+# RAPOR / ALARM
+# =========================================================
+
 def send_report():
 
     results = scan_all()
 
     if not results:
-        print("Sonuç yok.")
+
+        print(
+            "❌ Sonuç bulunamadı."
+        )
+
         return
 
-    update_paper_trades(results)
+    update_paper_trades(
+        results
+    )
 
-    # NORMAL RAPOR ARTIK OTOMATİK GÖNDERİLMEZ
-    # SADECE %85+ SİNYALLER ALARM OLARAK GÖNDERİLİR.
+    # Otomatik normal rapor YOK.
+    # Sadece güçlü sinyal alarmı.
 
-    check_new_signals(results)
+    check_new_signals(
+        results
+    )
 
 
 # =========================================================
-# /BTC
+# BTC
 # =========================================================
 
 def send_btc(chat_id):
@@ -946,11 +1308,14 @@ def send_btc(chat_id):
     )
 
     if result:
+
         send_message(
             chat_id,
             format_coin(result)
         )
+
     else:
+
         send_message(
             chat_id,
             "❌ BTC analizi alınamadı."
@@ -963,11 +1328,11 @@ def send_btc(chat_id):
 
 def send_status(chat_id):
 
-    open_trades = 0
-
-    for trade in paper_trades:
-        if trade["open"]:
-            open_trades += 1
+    open_trades = sum(
+        1
+        for trade in paper_trades
+        if trade["open"]
+    )
 
     text = (
         "🛩️ CRYPTO JET DURUM\n"
@@ -979,11 +1344,12 @@ def send_status(chat_id):
         "🪙 Coin sayısı: 10\n\n"
 
         "🔔 JET ALERT\n"
-        "85%+ güçlü sinyaller\n"
+        "85%+ güçlü\n"
         "90%+ çok güçlü\n"
         "95%+ extreme\n\n"
 
-        f"📈 Açık paper trade: {open_trades}"
+        f"📈 Açık paper trade: "
+        f"{open_trades}"
     )
 
     send_message(
@@ -996,21 +1362,29 @@ def send_status(chat_id):
 # PERFORMANS
 # =========================================================
 
-def send_performance(chat_id):
+def send_performance(
+    chat_id
+):
 
     closed = [
-        t for t in paper_trades
+        t
+        for t in paper_trades
         if not t["open"]
     ]
 
     if not closed:
+
         send_message(
             chat_id,
-            "📊 Henüz kapanmış paper trade yok."
+            "📊 Henüz kapanmış "
+            "paper trade yok."
         )
+
         return
 
-    total = len(closed)
+    total = len(
+        closed
+    )
 
     wins = sum(
         1
@@ -1053,7 +1427,7 @@ def send_performance(chat_id):
 
 
 # =========================================================
-# COINLER
+# COİNLER
 # =========================================================
 
 def send_coins(chat_id):
@@ -1064,7 +1438,10 @@ def send_coins(chat_id):
     )
 
     for coin in COINS:
-        text += f"• {coin}\n"
+
+        text += (
+            f"• {coin}\n"
+        )
 
     send_message(
         chat_id,
@@ -1086,11 +1463,11 @@ def send_help(chat_id):
         "/stop — Bildirimleri durdur\n"
         "/btc — BTC analizi\n"
         "/durum — Bot durumu\n"
-        "/performans — Paper trade performansı\n"
+        "/performans — Paper trade\n"
         "/coinler — İzlenen coinler\n"
         "/help — Yardım\n\n"
 
-        "🔔 Güçlü sinyaller otomatik alarm verir.\n"
+        "🔔 Güçlü sinyaller otomatik alarm.\n"
         "85%+ güçlü\n"
         "90%+ çok güçlü\n"
         "95%+ extreme"
@@ -1103,7 +1480,7 @@ def send_help(chat_id):
 
 
 # =========================================================
-# TELEGRAM KOMUTLARI
+# TELEGRAM UPDATE
 # =========================================================
 
 def process_updates():
@@ -1113,7 +1490,7 @@ def process_updates():
     offset = 0
 
     print(
-        "🛩️ Crypto Jet Telegram botu başladı!"
+        "🚀 Crypto Jet Telegram botu başladı!"
     )
 
     last_scan = 0
@@ -1131,7 +1508,9 @@ def process_updates():
             )
 
             if not response:
+
                 time.sleep(2)
+
                 continue
 
             updates = response.get(
@@ -1141,7 +1520,10 @@ def process_updates():
 
             for update in updates:
 
-                offset = update["update_id"] + 1
+                offset = (
+                    update["update_id"]
+                    + 1
+                )
 
                 message = update.get(
                     "message"
@@ -1150,16 +1532,18 @@ def process_updates():
                 if not message:
                     continue
 
-                chat_id = message["chat"]["id"]
+                chat_id = message[
+                    "chat"
+                ]["id"]
 
                 text = message.get(
                     "text",
                     ""
                 ).strip().lower()
 
-                # -------------------------
+                # -----------------------------------------
                 # START
-                # -------------------------
+                # -----------------------------------------
 
                 if text == "/start":
 
@@ -1171,17 +1555,17 @@ def process_updates():
                         chat_id,
                         "🚀 Crypto Jet çalışıyor!\n\n"
                         "🔔 JET ALERT aktif.\n"
-                        "💪 %85 ve üzeri güçlü sinyaller "
-                        "bildirim olarak gönderilecek.\n\n"
+                        "💪 %85 ve üzeri güçlü "
+                        "sinyaller bildirim olarak "
+                        "gönderilecek.\n\n"
                         "⚔️ Long/Short analizi aktif."
                     )
 
-                    # İlk tarama
                     send_report()
 
-                # -------------------------
+                # -----------------------------------------
                 # STOP
-                # -------------------------
+                # -----------------------------------------
 
                 elif text == "/stop":
 
@@ -1191,12 +1575,13 @@ def process_updates():
 
                     send_message(
                         chat_id,
-                        "🛑 Crypto Jet bildirimleri durduruldu."
+                        "🛑 Crypto Jet "
+                        "bildirimleri durduruldu."
                     )
 
-                # -------------------------
+                # -----------------------------------------
                 # BTC
-                # -------------------------
+                # -----------------------------------------
 
                 elif text == "/btc":
 
@@ -1204,9 +1589,9 @@ def process_updates():
                         chat_id
                     )
 
-                # -------------------------
+                # -----------------------------------------
                 # DURUM
-                # -------------------------
+                # -----------------------------------------
 
                 elif text == "/durum":
 
@@ -1214,9 +1599,9 @@ def process_updates():
                         chat_id
                     )
 
-                # -------------------------
+                # -----------------------------------------
                 # PERFORMANS
-                # -------------------------
+                # -----------------------------------------
 
                 elif text == "/performans":
 
@@ -1224,9 +1609,9 @@ def process_updates():
                         chat_id
                     )
 
-                # -------------------------
+                # -----------------------------------------
                 # COINLER
-                # -------------------------
+                # -----------------------------------------
 
                 elif text == "/coinler":
 
@@ -1234,9 +1619,9 @@ def process_updates():
                         chat_id
                     )
 
-                # -------------------------
+                # -----------------------------------------
                 # HELP
-                # -------------------------
+                # -----------------------------------------
 
                 elif text == "/help":
 
@@ -1245,20 +1630,21 @@ def process_updates():
                     )
 
             # =================================================
-            # OTOMATİK TARAMA
+            # OTOMATİK 10 DAKİKA TARAMA
             # =================================================
 
             now = time.time()
 
             if (
                 subscribers
-                and now - last_scan >= AUTO_INTERVAL
+                and now - last_scan
+                >= AUTO_INTERVAL
             ):
 
                 last_scan = now
 
                 print(
-                    "⏱ 10 dakikalık otomatik tarama..."
+                    "⏱ Otomatik tarama..."
                 )
 
                 send_report()
@@ -1266,7 +1652,7 @@ def process_updates():
         except Exception as e:
 
             print(
-                "ANA DÖNGÜ HATASI:",
+                "❌ ANA DÖNGÜ HATASI:",
                 e
             )
 
@@ -1284,11 +1670,11 @@ if __name__ == "__main__":
     )
 
     print(
-        "🚀 CRYPTO JET V7.4"
+        "🚀 CRYPTO JET V7.5"
     )
 
     print(
-        "⚔️ LONG / SHORT AKTİF"
+        "⚔️ LONG / SHORT DEBUG AKTİF"
     )
 
     print(
