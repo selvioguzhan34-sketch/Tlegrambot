@@ -4,23 +4,9 @@ import math
 import requests
 
 # =========================================================
-# CRYPTO JET V12.1 — STRICT 1000 SCORE
-#
-# 1H ANA ZAMAN DİLİMİ
-# 4H TREND TEYİDİ
-#
-# JET SCORE: 1 - 1000
-#
-# 700+   JET ALARM
-# 800+   STRONG
-# 900+   ELITE
-# 950+   EXTREME
-# 990+   ULTRA
-# 1000   MAXIMUM ALIGNMENT
-#
-# ÖNEMLİ:
-# SCORE gerçek kazanma olasılığı değildir.
-# Teknik uyum / model güven skorudur.
+# CRYPTO JET V12.2
+# 1H ANA SİNYAL + 4H TREND TEYİDİ
+# STRICT 1000 SCORE — 700+ ALARM / 800+ STRONG / 900+ ELITE / 950+ EXTREME / 990+ ULTRA / 1000 MAXIMUM
 # =========================================================
 
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -29,10 +15,7 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 COINBASE_API = "https://api.exchange.coinbase.com"
 
 session = requests.Session()
-session.headers.update({
-    "User-Agent": "CryptoJet/12.1"
-})
-
+session.headers.update({"User-Agent": "CryptoJet/12.2"})
 
 # =========================================================
 # AYARLAR
@@ -43,14 +26,12 @@ PRODUCT_REFRESH = 1800       # 30 dakika
 ALERT_COOLDOWN = 3600        # 1 saat
 
 MIN_CANDLES = 60
-
-# 1000 SCORE sistemindeki alarm seviyeleri
-ALARM_THRESHOLD = 700
-STRONG_THRESHOLD = 800
-ELITE_THRESHOLD = 900
-EXTREME_THRESHOLD = 950
-ULTRA_THRESHOLD = 990
-MAX_THRESHOLD = 1000
+VERY_STRONG_SIGNAL = 700     # 700/1000+ JET ALARM
+STRONG_SIGNAL = 800
+ELITE_SIGNAL = 900
+EXTREME_SIGNAL = 950
+ULTRA_SIGNAL = 990
+MAXIMUM_SIGNAL = 1000
 
 active_chat_id = None
 last_scan_time = 0
@@ -97,30 +78,22 @@ def fmt_price(price):
 # TELEGRAM
 # =========================================================
 
-def send_message(chat_id, text):
-
+def send_message(chat_id, text, disable_notification=False):
     if not chat_id:
         return False
 
     try:
-
         if len(text) <= 3900:
-
             response = session.post(
                 f"{TELEGRAM_API}/sendMessage",
-                json={
-                    "chat_id": chat_id,
-                    "text": text
-                },
+                json={"chat_id": chat_id, "text": text, "disable_notification": disable_notification},
                 timeout=20
             )
-
             return response.status_code == 200
 
         parts = []
 
         while text:
-
             if len(text) <= 3900:
                 parts.append(text)
                 break
@@ -136,13 +109,9 @@ def send_message(chat_id, text):
         success = True
 
         for part in parts:
-
             response = session.post(
                 f"{TELEGRAM_API}/sendMessage",
-                json={
-                    "chat_id": chat_id,
-                    "text": part
-                },
+                json={"chat_id": chat_id, "text": part},
                 timeout=20
             )
 
@@ -152,24 +121,19 @@ def send_message(chat_id, text):
         return success
 
     except Exception as e:
-
         print("Telegram gönderme hatası:", e)
-
         return False
 
 
 # =========================================================
-# COINBASE
+# COINBASE API
 # =========================================================
 
 def coinbase_get(path, params=None):
-
     url = COINBASE_API + path
 
     for attempt in range(4):
-
         try:
-
             response = session.get(
                 url,
                 params=params,
@@ -177,29 +141,16 @@ def coinbase_get(path, params=None):
             )
 
             if response.status_code == 200:
-
                 try:
                     return response.json()
-
                 except Exception:
-
-                    print(
-                        "Coinbase JSON okunamadı."
-                    )
-
+                    print("Coinbase JSON okunamadı.")
                     return None
 
             if response.status_code == 429:
-
                 wait = 2 ** attempt
-
-                print(
-                    f"Coinbase rate limit. "
-                    f"{wait}s bekleniyor..."
-                )
-
+                print(f"Coinbase rate limit. {wait}s bekleniyor...")
                 time.sleep(wait)
-
                 continue
 
             print(
@@ -209,12 +160,7 @@ def coinbase_get(path, params=None):
             )
 
         except Exception as e:
-
-            print(
-                "Coinbase bağlantı hatası:",
-                e
-            )
-
+            print("Coinbase bağlantı hatası:", e)
             time.sleep(2)
 
     return None
@@ -225,7 +171,6 @@ def coinbase_get(path, params=None):
 # =========================================================
 
 def get_products(force=False):
-
     global products_cache
     global last_product_refresh
 
@@ -238,26 +183,18 @@ def get_products(force=False):
     ):
         return products_cache
 
-    print(
-        "Coinbase coin listesi yenileniyor..."
-    )
+    print("Coinbase coin listesi yenileniyor...")
 
     data = coinbase_get("/products")
 
     if not isinstance(data, list):
-
-        print(
-            "Coinbase ürün listesi alınamadı."
-        )
-
+        print("Coinbase ürün listesi alınamadı.")
         return products_cache
 
     products = []
 
     for p in data:
-
         try:
-
             product_id = p.get("id", "")
             base = p.get("base_currency", "")
             quote = p.get("quote_currency", "")
@@ -269,11 +206,7 @@ def get_products(force=False):
             if quote != "USD":
                 continue
 
-            if base in {
-                "USD",
-                "USDC",
-                "USDT"
-            }:
+            if base in {"USD", "USDC", "USDT"}:
                 continue
 
             if status != "online":
@@ -296,10 +229,7 @@ def get_products(force=False):
     products_cache = products
     last_product_refresh = now
 
-    print(
-        f"Coinbase aktif USD coin sayısı: "
-        f"{len(products)}"
-    )
+    print(f"Coinbase aktif USD coin sayısı: {len(products)}")
 
     return products
 
@@ -309,12 +239,9 @@ def get_products(force=False):
 # =========================================================
 
 def get_candles(product_id):
-
     data = coinbase_get(
         f"/products/{product_id}/candles",
-        {
-            "granularity": 3600
-        }
+        {"granularity": 3600}
     )
 
     if not isinstance(data, list):
@@ -323,11 +250,7 @@ def get_candles(product_id):
     candles = []
 
     for row in data:
-
-        if not isinstance(row, list):
-            continue
-
-        if len(row) < 6:
+        if not isinstance(row, list) or len(row) < 6:
             continue
 
         candle = {
@@ -344,46 +267,31 @@ def get_candles(product_id):
 
         candles.append(candle)
 
-    candles.sort(
-        key=lambda x: x["time"]
-    )
-
+    candles.sort(key=lambda x: x["time"])
     return candles
 
 
 # =========================================================
-# 4H
+# 4H CANDLE
 # =========================================================
 
 def aggregate_4h(candles):
-
     if len(candles) < 4:
         return []
 
     buckets = {}
 
     for candle in candles:
-
         timestamp = int(candle["time"])
+        bucket_time = (timestamp // 14400) * 14400
 
-        bucket_time = (
-            timestamp // 14400
-        ) * 14400
-
-        buckets.setdefault(
-            bucket_time,
-            []
-        ).append(candle)
+        buckets.setdefault(bucket_time, []).append(candle)
 
     result = []
 
     for bucket_time in sorted(buckets):
-
         bucket = buckets[bucket_time]
-
-        bucket.sort(
-            key=lambda x: x["time"]
-        )
+        bucket.sort(key=lambda x: x["time"])
 
         if len(bucket) < 4:
             continue
@@ -391,17 +299,10 @@ def aggregate_4h(candles):
         result.append({
             "time": bucket_time,
             "open": bucket[0]["open"],
-            "high": max(
-                x["high"] for x in bucket
-            ),
-            "low": min(
-                x["low"] for x in bucket
-            ),
+            "high": max(x["high"] for x in bucket),
+            "low": min(x["low"] for x in bucket),
             "close": bucket[-1]["close"],
-            "volume": sum(
-                x["volume"]
-                for x in bucket
-            )
+            "volume": sum(x["volume"] for x in bucket)
         })
 
     return result
@@ -412,23 +313,14 @@ def aggregate_4h(candles):
 # =========================================================
 
 def ema(values, period):
-
     if len(values) < period:
         return None
 
     multiplier = 2 / (period + 1)
-
-    result = (
-        sum(values[:period])
-        / period
-    )
+    result = sum(values[:period]) / period
 
     for value in values[period:]:
-
-        result = (
-            (value - result)
-            * multiplier
-        ) + result
+        result = ((value - result) * multiplier) + result
 
     return result
 
@@ -438,7 +330,6 @@ def ema(values, period):
 # =========================================================
 
 def rsi(values, period=14):
-
     if len(values) <= period:
         return None
 
@@ -446,61 +337,27 @@ def rsi(values, period=14):
     losses = []
 
     for i in range(1, len(values)):
-
-        change = (
-            values[i]
-            - values[i - 1]
-        )
+        change = values[i] - values[i - 1]
 
         if change > 0:
-
             gains.append(change)
             losses.append(0)
-
         else:
-
             gains.append(0)
             losses.append(abs(change))
 
-    avg_gain = (
-        sum(gains[:period])
-        / period
-    )
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
 
-    avg_loss = (
-        sum(losses[:period])
-        / period
-    )
-
-    for i in range(
-        period,
-        len(gains)
-    ):
-
-        avg_gain = (
-            (
-                avg_gain *
-                (period - 1)
-            )
-            + gains[i]
-        ) / period
-
-        avg_loss = (
-            (
-                avg_loss *
-                (period - 1)
-            )
-            + losses[i]
-        ) / period
+    for i in range(period, len(gains)):
+        avg_gain = ((avg_gain * (period - 1)) + gains[i]) / period
+        avg_loss = ((avg_loss * (period - 1)) + losses[i]) / period
 
     if avg_loss == 0:
         return 100
 
     rs = avg_gain / avg_loss
-
-    return 100 - (
-        100 / (1 + rs)
-    )
+    return 100 - (100 / (1 + rs))
 
 
 # =========================================================
@@ -508,60 +365,31 @@ def rsi(values, period=14):
 # =========================================================
 
 def macd(values):
-
     if len(values) < 40:
         return None, None, None
 
     macd_values = []
 
-    for i in range(
-        26,
-        len(values) + 1
-    ):
-
+    for i in range(26, len(values) + 1):
         subset = values[:i]
+        e12 = ema(subset, 12)
+        e26 = ema(subset, 26)
 
-        e12 = ema(
-            subset,
-            12
-        )
-
-        e26 = ema(
-            subset,
-            26
-        )
-
-        if (
-            e12 is not None
-            and e26 is not None
-        ):
-
-            macd_values.append(
-                e12 - e26
-            )
+        if e12 is not None and e26 is not None:
+            macd_values.append(e12 - e26)
 
     if len(macd_values) < 9:
         return None, None, None
 
-    signal = ema(
-        macd_values,
-        9
-    )
+    signal = ema(macd_values, 9)
 
     if signal is None:
         return None, None, None
 
     current = macd_values[-1]
+    histogram = current - signal
 
-    histogram = (
-        current - signal
-    )
-
-    return (
-        current,
-        signal,
-        histogram
-    )
+    return current, signal, histogram
 
 
 # =========================================================
@@ -569,33 +397,19 @@ def macd(values):
 # =========================================================
 
 def atr(candles, period=14):
-
     if len(candles) <= period:
         return None
 
     trs = []
 
-    for i in range(
-        1,
-        len(candles)
-    ):
-
+    for i in range(1, len(candles)):
         current = candles[i]
         previous = candles[i - 1]
 
         tr = max(
-            current["high"]
-            - current["low"],
-
-            abs(
-                current["high"]
-                - previous["close"]
-            ),
-
-            abs(
-                current["low"]
-                - previous["close"]
-            )
+            current["high"] - current["low"],
+            abs(current["high"] - previous["close"]),
+            abs(current["low"] - previous["close"])
         )
 
         trs.append(tr)
@@ -603,10 +417,7 @@ def atr(candles, period=14):
     if len(trs) < period:
         return None
 
-    return (
-        sum(trs[-period:])
-        / period
-    )
+    return sum(trs[-period:]) / period
 
 
 # =========================================================
@@ -614,7 +425,6 @@ def atr(candles, period=14):
 # =========================================================
 
 def adx(candles, period=14):
-
     if len(candles) < period + 2:
         return None
 
@@ -622,55 +432,20 @@ def adx(candles, period=14):
     plus_dm = []
     minus_dm = []
 
-    for i in range(
-        1,
-        len(candles)
-    ):
-
+    for i in range(1, len(candles)):
         current = candles[i]
         previous = candles[i - 1]
 
-        up_move = (
-            current["high"]
-            - previous["high"]
-        )
+        up_move = current["high"] - previous["high"]
+        down_move = previous["low"] - current["low"]
 
-        down_move = (
-            previous["low"]
-            - current["low"]
-        )
-
-        plus = (
-            up_move
-            if (
-                up_move > down_move
-                and up_move > 0
-            )
-            else 0
-        )
-
-        minus = (
-            down_move
-            if (
-                down_move > up_move
-                and down_move > 0
-            )
-            else 0
-        )
+        plus = up_move if up_move > down_move and up_move > 0 else 0
+        minus = down_move if down_move > up_move and down_move > 0 else 0
 
         tr = max(
-            current["high"]
-            - current["low"],
-
-            abs(
-                current["high"]
-                - previous["close"]
-            ),
-
-            abs(
-                current["low"]
-                - previous["close"]
-            )
+            current["high"] - current["low"],
+            abs(current["high"] - previous["close"]),
+            abs(current["low"] - previous["close"])
         )
 
         trs.append(tr)
@@ -680,53 +455,22 @@ def adx(candles, period=14):
     if len(trs) < period:
         return None
 
-    tr_avg = (
-        sum(trs[-period:])
-        / period
-    )
-
-    plus_avg = (
-        sum(plus_dm[-period:])
-        / period
-    )
-
-    minus_avg = (
-        sum(minus_dm[-period:])
-        / period
-    )
+    tr_avg = sum(trs[-period:]) / period
+    plus_avg = sum(plus_dm[-period:]) / period
+    minus_avg = sum(minus_dm[-period:]) / period
 
     if tr_avg == 0:
         return 0
 
-    plus_di = (
-        100 *
-        plus_avg /
-        tr_avg
-    )
+    plus_di = 100 * plus_avg / tr_avg
+    minus_di = 100 * minus_avg / tr_avg
 
-    minus_di = (
-        100 *
-        minus_avg /
-        tr_avg
-    )
-
-    denominator = (
-        plus_di +
-        minus_di
-    )
+    denominator = plus_di + minus_di
 
     if denominator == 0:
         return 0
 
-    return (
-        100 *
-        abs(
-            plus_di -
-            minus_di
-        )
-        /
-        denominator
-    )
+    return 100 * abs(plus_di - minus_di) / denominator
 
 
 # =========================================================
@@ -734,21 +478,13 @@ def adx(candles, period=14):
 # =========================================================
 
 def stoch_rsi(values, period=14):
-
     if len(values) < period * 2:
         return None
 
     rsi_values = []
 
-    for i in range(
-        period,
-        len(values)
-    ):
-
-        value = rsi(
-            values[:i + 1],
-            period
-        )
+    for i in range(period, len(values)):
+        value = rsi(values[:i + 1], period)
 
         if value is not None:
             rsi_values.append(value)
@@ -757,24 +493,13 @@ def stoch_rsi(values, period=14):
         return None
 
     recent = rsi_values[-period:]
-
     lowest = min(recent)
     highest = max(recent)
 
     if highest == lowest:
         return 50
 
-    return (
-        (
-            rsi_values[-1]
-            - lowest
-        )
-        /
-        (
-            highest
-            - lowest
-        )
-    ) * 100
+    return ((rsi_values[-1] - lowest) / (highest - lowest)) * 100
 
 
 # =========================================================
@@ -782,41 +507,23 @@ def stoch_rsi(values, period=14):
 # =========================================================
 
 def bollinger(values, period=20):
-
     if len(values) < period:
         return None, None, None
 
     recent = values[-period:]
-
-    middle = (
-        sum(recent)
-        / period
-    )
+    middle = sum(recent) / period
 
     variance = sum(
         (x - middle) ** 2
         for x in recent
     ) / period
 
-    deviation = math.sqrt(
-        variance
-    )
+    deviation = math.sqrt(variance)
 
-    upper = (
-        middle +
-        2 * deviation
-    )
+    upper = middle + 2 * deviation
+    lower = middle - 2 * deviation
 
-    lower = (
-        middle -
-        2 * deviation
-    )
-
-    return (
-        upper,
-        middle,
-        lower
-    )
+    return upper, middle, lower
 
 
 # =========================================================
@@ -824,16 +531,11 @@ def bollinger(values, period=20):
 # =========================================================
 
 def vwap(candles, period=20):
-
     if len(candles) < period:
         return None
 
     recent = candles[-period:]
-
-    total_volume = sum(
-        x["volume"]
-        for x in recent
-    )
+    total_volume = sum(x["volume"] for x in recent)
 
     if total_volume <= 0:
         return None
@@ -841,22 +543,10 @@ def vwap(candles, period=20):
     total = 0
 
     for x in recent:
+        typical = (x["high"] + x["low"] + x["close"]) / 3
+        total += typical * x["volume"]
 
-        typical = (
-            x["high"]
-            + x["low"]
-            + x["close"]
-        ) / 3
-
-        total += (
-            typical *
-            x["volume"]
-        )
-
-    return (
-        total /
-        total_volume
-    )
+    return total / total_volume
 
 
 # =========================================================
@@ -864,32 +554,16 @@ def vwap(candles, period=20):
 # =========================================================
 
 def obv_delta(candles, period=20):
-
     if len(candles) < period + 1:
         return 0
 
     value = 0
     obv_values = []
 
-    for i in range(
-        1,
-        len(candles)
-    ):
-
-        if (
-            candles[i]["close"]
-            >
-            candles[i - 1]["close"]
-        ):
-
+    for i in range(1, len(candles)):
+        if candles[i]["close"] > candles[i - 1]["close"]:
             value += candles[i]["volume"]
-
-        elif (
-            candles[i]["close"]
-            <
-            candles[i - 1]["close"]
-        ):
-
+        elif candles[i]["close"] < candles[i - 1]["close"]:
             value -= candles[i]["volume"]
 
         obv_values.append(value)
@@ -897,23 +571,15 @@ def obv_delta(candles, period=20):
     if len(obv_values) < period:
         return 0
 
-    return (
-        obv_values[-1]
-        - obv_values[-period]
-    )
+    return obv_values[-1] - obv_values[-period]
 
 
 # =========================================================
 # HACİM YÖNÜ
 # =========================================================
 
-def volume_direction(
-    candles,
-    period=20
-):
-
+def volume_direction(candles, period=20):
     if len(candles) < period:
-
         return 50, 50, "NÖTR"
 
     recent = candles[-period:]
@@ -922,550 +588,125 @@ def volume_direction(
     short_volume = 0
 
     for candle in recent:
-
         volume = candle["volume"]
-
-        candle_range = (
-            candle["high"]
-            - candle["low"]
-        )
-
-        body = abs(
-            candle["close"]
-            - candle["open"]
-        )
+        candle_range = candle["high"] - candle["low"]
+        body = abs(candle["close"] - candle["open"])
 
         if candle_range <= 0:
-
-            long_volume += (
-                volume * 0.5
-            )
-
-            short_volume += (
-                volume * 0.5
-            )
-
+            long_volume += volume * 0.5
+            short_volume += volume * 0.5
             continue
 
-        body_ratio = clamp(
-            body / candle_range,
-            0,
-            1
-        )
+        body_ratio = clamp(body / candle_range, 0, 1)
 
         if candle["close"] > candle["open"]:
-
-            long_volume += (
-                volume *
-                (
-                    0.5 +
-                    body_ratio * 0.5
-                )
-            )
-
-            short_volume += (
-                volume *
-                (
-                    0.5 -
-                    body_ratio * 0.5
-                )
-            )
+            long_volume += volume * (0.5 + body_ratio * 0.5)
+            short_volume += volume * (0.5 - body_ratio * 0.5)
 
         elif candle["close"] < candle["open"]:
-
-            short_volume += (
-                volume *
-                (
-                    0.5 +
-                    body_ratio * 0.5
-                )
-            )
-
-            long_volume += (
-                volume *
-                (
-                    0.5 -
-                    body_ratio * 0.5
-                )
-            )
+            short_volume += volume * (0.5 + body_ratio * 0.5)
+            long_volume += volume * (0.5 - body_ratio * 0.5)
 
         else:
+            long_volume += volume * 0.5
+            short_volume += volume * 0.5
 
-            long_volume += (
-                volume * 0.5
-            )
-
-            short_volume += (
-                volume * 0.5
-            )
-
-    total = (
-        long_volume +
-        short_volume
-    )
+    total = long_volume + short_volume
 
     if total <= 0:
         return 50, 50, "NÖTR"
 
-    long_pct = (
-        long_volume /
-        total
-    ) * 100
-
-    short_pct = (
-        short_volume /
-        total
-    ) * 100
-
-    difference = (
-        long_pct -
-        short_pct
-    )
+    long_pct = long_volume / total * 100
+    short_pct = short_volume / total * 100
+    difference = long_pct - short_pct
 
     if difference >= 8:
-
         direction = "LONG"
-
     elif difference <= -8:
-
         direction = "SHORT"
-
     else:
-
         direction = "NÖTR"
 
-    return (
-        long_pct,
-        short_pct,
-        direction
-    )
+    return long_pct, short_pct, direction
 
 
 # =========================================================
 # HACİM ORANI
 # =========================================================
 
-def volume_ratio(
-    candles,
-    period=20
-):
-
+def volume_ratio(candles, period=20):
     if len(candles) < period + 1:
         return 1
 
-    current_volume = (
-        candles[-1]["volume"]
-    )
-
-    previous = candles[
-        -period - 1:-1
-    ]
+    current_volume = candles[-1]["volume"]
+    previous = candles[-period - 1:-1]
 
     if not previous:
         return 1
 
-    average = (
-        sum(
-            x["volume"]
-            for x in previous
-        )
-        /
-        len(previous)
-    )
+    average = sum(x["volume"] for x in previous) / len(previous)
 
     if average <= 0:
         return 1
 
-    return (
-        current_volume /
-        average
-    )
-
-
-# =========================================================
-# GİRİŞ KALİTESİ
-# =========================================================
-
-def calculate_entry_quality(
-    decision,
-    price,
-    ema20,
-    atr_value,
-    rsi_value,
-    adx_value,
-    volume_ratio_value,
-    confirmation_count,
-    vwap_support,
-    bollinger_support,
-    stoch_support
-):
-
-    if decision not in ["LONG", "SHORT"]:
-
-        return (
-            "C",
-            "🟡 NET GİRİŞ YOK",
-            0
-        )
-
-    quality = 0
-
-    # -----------------------------------------------------
-    # ANA TEYİT
-    # -----------------------------------------------------
-
-    quality += confirmation_count * 10
-
-    # -----------------------------------------------------
-    # ADX
-    # -----------------------------------------------------
-
-    if adx_value is not None:
-
-        if adx_value >= 30:
-            quality += 15
-
-        elif adx_value >= 25:
-            quality += 10
-
-        elif adx_value >= 20:
-            quality += 5
-
-    # -----------------------------------------------------
-    # HACİM
-    # -----------------------------------------------------
-
-    if volume_ratio_value >= 1.50:
-        quality += 15
-
-    elif volume_ratio_value >= 1.20:
-        quality += 10
-
-    elif volume_ratio_value >= 1.00:
-        quality += 5
-
-    # -----------------------------------------------------
-    # RSI
-    # -----------------------------------------------------
-
-    if rsi_value is not None:
-
-        if decision == "LONG":
-
-            if 58 <= rsi_value <= 72:
-                quality += 10
-
-            elif 55 <= rsi_value < 58:
-                quality += 6
-
-            elif rsi_value > 78:
-                quality -= 10
-
-        else:
-
-            if 28 <= rsi_value <= 42:
-                quality += 10
-
-            elif 42 < rsi_value <= 45:
-                quality += 6
-
-            elif rsi_value < 22:
-                quality -= 10
-
-    # -----------------------------------------------------
-    # VWAP
-    # -----------------------------------------------------
-
-    if vwap_support:
-        quality += 5
-
-    # -----------------------------------------------------
-    # BOLLINGER
-    # -----------------------------------------------------
-
-    if bollinger_support:
-        quality += 5
-
-    # -----------------------------------------------------
-    # STOCH RSI
-    # -----------------------------------------------------
-
-    if stoch_support:
-        quality += 5
-
-    # -----------------------------------------------------
-    # AŞIRI UZAK GİRİŞ KONTROLÜ
-    # -----------------------------------------------------
-
-    if (
-        ema20 is not None
-        and atr_value is not None
-        and atr_value > 0
-    ):
-
-        distance = abs(
-            price - ema20
-        )
-
-        atr_distance = (
-            distance /
-            atr_value
-        )
-
-        # Fiyat trendden çok uzaksa
-        # giriş kalitesi düşürülür.
-
-        if atr_distance <= 1.0:
-
-            quality += 10
-
-        elif atr_distance <= 1.8:
-
-            quality += 5
-
-        elif atr_distance >= 3.0:
-
-            quality -= 20
-
-        elif atr_distance >= 2.3:
-
-            quality -= 10
-
-    quality = int(
-        clamp(
-            quality,
-            0,
-            100
-        )
-    )
-
-    if quality >= 90:
-
-        return (
-            "A+",
-            "🔥 A+ MÜKEMMEL",
-            quality
-        )
-
-    if quality >= 80:
-
-        return (
-            "A",
-            "🟢 A ÇOK İYİ",
-            quality
-        )
-
-    if quality >= 65:
-
-        return (
-            "B",
-            "🟡 B İYİ",
-            quality
-        )
-
-    if quality >= 50:
-
-        return (
-            "C",
-            "🟠 C ORTA",
-            quality
-        )
-
-    return (
-        "D",
-        "🔴 D ZAYIF",
-        quality
-    )
-
-
-# =========================================================
-# 1000 SCORE SEVİYESİ
-# =========================================================
-
-def score_label(score):
-
-    if score >= 1000:
-
-        return "👑 MAXIMUM ALIGNMENT"
-
-    if score >= 990:
-
-        return "☢️ JET ULTRA"
-
-    if score >= 950:
-
-        return "💥 JET EXTREME"
-
-    if score >= 900:
-
-        return "🚀 JET ELITE"
-
-    if score >= 800:
-
-        return "🔥 JET STRONG"
-
-    if score >= 700:
-
-        return "🟢 JET ALARM"
-
-    if score >= 600:
-
-        return "🟠 GÜÇLENİYOR"
-
-    if score >= 400:
-
-        return "🟡 İZLE"
-
-    return "⚪ ZAYIF"
+    return current_volume / average
 
 
 # =========================================================
 # ANA ANALİZ
+#
+# AĞIRLIKLAR = TOPLAM 1000
+# 1H EMA TREND       250
+# 4H TREND           150
+# RSI                150
+# MACD               150
+# HACİM              150
+# ADX                  50
+# VWAP                 50
+# BOLLINGER            30
+# STOCH RSI             20
 # =========================================================
 
-def analyze_coin(
-    product,
-    candles
-):
-
+def analyze_coin(product, candles):
     if len(candles) < MIN_CANDLES:
         return None
 
-    closes = [
-        x["close"]
-        for x in candles
-    ]
-
+    closes = [x["close"] for x in candles]
     price = closes[-1]
 
-    # =====================================================
-    # 1H
-    # =====================================================
+    ema20 = ema(closes, 20)
+    ema50 = ema(closes, 50)
 
-    ema20 = ema(
-        closes,
-        20
-    )
+    rsi_value = rsi(closes, 14)
+    macd_value, macd_signal, macd_hist = macd(closes)
+    adx_value = adx(candles, 14)
+    atr_value = atr(candles, 14)
+    stoch_value = stoch_rsi(closes, 14)
 
-    ema50 = ema(
-        closes,
-        50
-    )
+    upper_bb, middle_bb, lower_bb = bollinger(closes, 20)
+    vwap_value = vwap(candles, 20)
+    obv_value = obv_delta(candles, 20)
+    vol_ratio = volume_ratio(candles, 20)
 
-    rsi_value = rsi(
-        closes,
-        14
-    )
+    long_vol, short_vol, vol_direction = volume_direction(candles, 20)
 
-    (
-        macd_value,
-        macd_signal,
-        macd_hist
-    ) = macd(closes)
+    # -----------------------------------------------------
+    # 4H TREND
+    # -----------------------------------------------------
 
-    adx_value = adx(
-        candles,
-        14
-    )
-
-    atr_value = atr(
-        candles,
-        14
-    )
-
-    stoch_value = stoch_rsi(
-        closes,
-        14
-    )
-
-    (
-        upper_bb,
-        middle_bb,
-        lower_bb
-    ) = bollinger(
-        closes,
-        20
-    )
-
-    vwap_value = vwap(
-        candles,
-        20
-    )
-
-    obv_value = obv_delta(
-        candles,
-        20
-    )
-
-    vol_ratio = volume_ratio(
-        candles,
-        20
-    )
-
-    (
-        long_vol,
-        short_vol,
-        vol_direction
-    ) = volume_direction(
-        candles,
-        20
-    )
-
-    # =====================================================
-    # 4H
-    # =====================================================
-
-    candles_4h = aggregate_4h(
-        candles
-    )
+    candles_4h = aggregate_4h(candles)
 
     ema20_4h = None
     ema50_4h = None
 
-    htf_long = False
-    htf_short = False
-
     if len(candles_4h) >= 50:
+        closes_4h = [x["close"] for x in candles_4h]
+        ema20_4h = ema(closes_4h, 20)
+        ema50_4h = ema(closes_4h, 50)
 
-        closes_4h = [
-            x["close"]
-            for x in candles_4h
-        ]
-
-        ema20_4h = ema(
-            closes_4h,
-            20
-        )
-
-        ema50_4h = ema(
-            closes_4h,
-            50
-        )
-
-        if (
-            ema20_4h is not None
-            and ema50_4h is not None
-        ):
-
-            if (
-                price >
-                ema20_4h >
-                ema50_4h
-            ):
-
-                htf_long = True
-
-            elif (
-                price <
-                ema20_4h <
-                ema50_4h
-            ):
-
-                htf_short = True
-
-    # =====================================================
-    # HAM SKOR
-    # =====================================================
+    # -----------------------------------------------------
+    # SKOR SİSTEMİ
+    # -----------------------------------------------------
 
     long_score = 0.0
     short_score = 0.0
@@ -1473,949 +714,276 @@ def analyze_coin(
     reasons_long = []
     reasons_short = []
 
-    # =====================================================
-    # 1H EMA — 250 / 1000
-    # =====================================================
-
-    if (
-        ema20 is not None
-        and ema50 is not None
-    ):
-
+    # 1H EMA = 25
+    if ema20 is not None and ema50 is not None:
         if price > ema20 > ema50:
-
-            long_score += 250
-
-            reasons_long.append(
-                "1H EMA trend güçlü yukarı"
-            )
-
+            long_score += 2050
+            reasons_long.append("1H EMA trend güçlü yukarı")
         elif price < ema20 < ema50:
-
-            short_score += 250
-
-            reasons_short.append(
-                "1H EMA trend güçlü aşağı"
-            )
-
+            short_score += 2050
+            reasons_short.append("1H EMA trend güçlü aşağı")
         elif price > ema50:
-
             long_score += 125
-
-            reasons_long.append(
-                "Fiyat 1H EMA50 üzerinde"
-            )
-
+            reasons_long.append("Fiyat 1H EMA50 üzerinde")
         elif price < ema50:
-
             short_score += 125
+            reasons_short.append("Fiyat 1H EMA50 altında")
 
-            reasons_short.append(
-                "Fiyat 1H EMA50 altında"
-            )
+    # 4H = 15
+    htf_long = False
+    htf_short = False
 
-    # =====================================================
-    # 4H TREND — 200
-    # =====================================================
-
-    if htf_long:
-
-        long_score += 200
-
-        reasons_long.append(
-            "4H trend LONG teyitli"
-        )
-
-    elif htf_short:
-
-        short_score += 200
-
-        reasons_short.append(
-            "4H trend SHORT teyitli"
-        )
-
-    elif (
-        ema50_4h is not None
-        and price > ema50_4h
-    ):
-
-        long_score += 100
-
-        reasons_long.append(
-            "Fiyat 4H EMA50 üzerinde"
-        )
-
-    elif (
-        ema50_4h is not None
-        and price < ema50_4h
-    ):
-
-        short_score += 100
-
-        reasons_short.append(
-            "Fiyat 4H EMA50 altında"
-        )
-
-    # =====================================================
-    # RSI — 150
-    # =====================================================
-
-    if rsi_value is not None:
-
-        if rsi_value >= 60:
-
+    if ema20_4h is not None and ema50_4h is not None:
+        if price > ema20_4h > ema50_4h:
             long_score += 150
-
-            reasons_long.append(
-                f"RSI güçlü ({rsi_value:.1f})"
-            )
-
-        elif rsi_value >= 55:
-
-            long_score += 80
-
-            reasons_long.append(
-                f"RSI pozitif ({rsi_value:.1f})"
-            )
-
-        elif rsi_value <= 40:
-
+            htf_long = True
+            reasons_long.append("4H trend yukarı teyitli")
+        elif price < ema20_4h < ema50_4h:
             short_score += 150
+            htf_short = True
+            reasons_short.append("4H trend aşağı teyitli")
+        elif price > ema50_4h:
+            long_score += 75
+        elif price < ema50_4h:
+            short_score += 75
 
-            reasons_short.append(
-                f"RSI zayıf ({rsi_value:.1f})"
-            )
-
+    # RSI = 15
+    if rsi_value is not None:
+        if rsi_value >= 60:
+            long_score += 150
+            reasons_long.append(f"RSI güçlü ({rsi_value:.1f})")
+        elif rsi_value >= 55:
+            long_score += 80
+            reasons_long.append(f"RSI pozitif ({rsi_value:.1f})")
+        elif rsi_value <= 40:
+            short_score += 150
+            reasons_short.append(f"RSI zayıf ({rsi_value:.1f})")
         elif rsi_value <= 45:
-
             short_score += 80
+            reasons_short.append(f"RSI negatif ({rsi_value:.1f})")
 
-            reasons_short.append(
-                f"RSI negatif ({rsi_value:.1f})"
-            )
-
-    # =====================================================
-    # MACD — 100
-    # =====================================================
-
+    # MACD = 15
     if macd_hist is not None:
-
-        if macd_hist > 0:
-
-            long_score += 100
-
-            reasons_long.append(
-                "MACD pozitif"
-            )
-
+        if macd_hist > 0 and macd_value is not None and macd_signal is not None:
+            long_score += 150
+            reasons_long.append("MACD pozitif")
         elif macd_hist < 0:
+            short_score += 150
+            reasons_short.append("MACD negatif")
 
-            short_score += 100
-
-            reasons_short.append(
-                "MACD negatif"
-            )
-
-    # =====================================================
-    # HACİM — 100
-    # =====================================================
-
+    # HACİM = 15
     if vol_direction == "LONG":
-
-        long_score += 100
-
-        reasons_long.append(
-            "Hacim LONG'u destekliyor"
-        )
-
+        long_score += 150
+        reasons_long.append("Hacim LONG'u destekliyor")
     elif vol_direction == "SHORT":
+        short_score += 150
+        reasons_short.append("Hacim SHORT'u destekliyor")
 
-        short_score += 100
+    # ADX = 5
+    adx_strong = adx_value is not None and adx_value >= 25
 
-        reasons_short.append(
-            "Hacim SHORT'u destekliyor"
-        )
-
-    # =====================================================
-    # ADX — 50
-    # =====================================================
-
-    adx_long_support = False
-    adx_short_support = False
-
-    if (
-        adx_value is not None
-        and adx_value >= 25
-    ):
-
+    if adx_strong:
         if long_score > short_score:
-
             long_score += 50
-            adx_long_support = True
-
         elif short_score > long_score:
-
             short_score += 50
-            adx_short_support = True
 
-    # =====================================================
-    # VWAP — 50
-    # =====================================================
-
+    # VWAP = 5
     vwap_support_long = False
     vwap_support_short = False
 
     if vwap_value is not None:
-
         if price > vwap_value:
-
             long_score += 50
             vwap_support_long = True
-
         elif price < vwap_value:
-
             short_score += 50
             vwap_support_short = True
 
-    # =====================================================
-    # BOLLINGER — 50
-    # =====================================================
-
-    bollinger_long = False
-    bollinger_short = False
-
-    if (
-        upper_bb is not None
-        and lower_bb is not None
-    ):
-
-        band_width = (
-            upper_bb -
-            lower_bb
-        )
+    # BOLLINGER = 3
+    if upper_bb is not None and lower_bb is not None:
+        band_width = upper_bb - lower_bb
 
         if band_width > 0:
-
-            position = (
-                price -
-                lower_bb
-            ) / band_width
+            position = (price - lower_bb) / band_width
 
             if position >= 0.65:
-
-                long_score += 50
-                bollinger_long = True
-
+                long_score += 30
             elif position <= 0.35:
+                short_score += 30
 
-                short_score += 50
-                bollinger_short = True
-
-    # =====================================================
-    # STOCH RSI — 50
-    # =====================================================
-
-    stoch_long = False
-    stoch_short = False
-
+    # STOCH RSI = 2
     if stoch_value is not None:
-
         if stoch_value >= 60:
-
-            long_score += 50
-            stoch_long = True
-
+            long_score += 20
         elif stoch_value <= 40:
+            short_score += 20
 
-            short_score += 50
-            stoch_short = True
-
-    # =====================================================
-    # HAM SKOR 1000'E SIĞDIR
-    # =====================================================
-
-    long_score = clamp(
-        long_score,
-        0,
-        1000
-    )
-
-    short_score = clamp(
-        short_score,
-        0,
-        1000
-    )
-
-    # =====================================================
+    # -----------------------------------------------------
     # KARAR
-    # =====================================================
+    # -----------------------------------------------------
 
-    difference = abs(
-        long_score -
-        short_score
-    )
+    long_score = clamp(long_score, 0, 1000)
+    short_score = clamp(short_score, 0, 1000)
+
+    difference = abs(long_score - short_score)
 
     if difference < 150:
-
         decision = "BEKLE"
-
     elif long_score > short_score:
-
         decision = "LONG"
-
     else:
-
         decision = "SHORT"
 
-    raw_strength = int(
-        round(
-            max(
-                long_score,
-                short_score
-            )
-        )
-    )
+    strength = int(round(max(long_score, short_score)))
 
-    # =====================================================
-    # ANA TEYİT SAYISI
-    # =====================================================
+    # -----------------------------------------------------
+    # TEYİT SAYISI
+    # 5 ana teyit:
+    # EMA1H + EMA4H + ADX + Hacim + VWAP
+    # -----------------------------------------------------
 
     confirmation_count = 0
 
     if decision == "LONG":
-
-        if (
-            ema20 is not None
-            and price > ema20
-        ):
+        if ema20 is not None and price > ema20:
             confirmation_count += 1
-
         if htf_long:
             confirmation_count += 1
-
-        if (
-            rsi_value is not None
-            and rsi_value >= 55
-        ):
+        if adx_strong and long_score >= short_score:
             confirmation_count += 1
-
-        if (
-            macd_hist is not None
-            and macd_hist > 0
-        ):
-            confirmation_count += 1
-
         if vol_direction == "LONG":
             confirmation_count += 1
-
-    elif decision == "SHORT":
-
-        if (
-            ema20 is not None
-            and price < ema20
-        ):
-            confirmation_count += 1
-
-        if htf_short:
-            confirmation_count += 1
-
-        if (
-            rsi_value is not None
-            and rsi_value <= 45
-        ):
-            confirmation_count += 1
-
-        if (
-            macd_hist is not None
-            and macd_hist < 0
-        ):
-            confirmation_count += 1
-
-        if vol_direction == "SHORT":
-            confirmation_count += 1
-
-    # =====================================================
-    # ÇELİŞKİLER
-    # =====================================================
-
-    conflict = False
-    conflict_reasons = []
-
-    if decision == "LONG":
-
-        if htf_short:
-
-            conflict = True
-
-            conflict_reasons.append(
-                "4H trend ters"
-            )
-
-        if vol_direction == "SHORT":
-
-            conflict = True
-
-            conflict_reasons.append(
-                "Hacim ters"
-            )
-
-    elif decision == "SHORT":
-
-        if htf_long:
-
-            conflict = True
-
-            conflict_reasons.append(
-                "4H trend ters"
-            )
-
-        if vol_direction == "LONG":
-
-            conflict = True
-
-            conflict_reasons.append(
-                "Hacim ters"
-            )
-
-    if vol_ratio < 0.70:
-
-        conflict = True
-
-        conflict_reasons.append(
-            "Hacim çok düşük"
-        )
-
-    if (
-        adx_value is not None
-        and adx_value < 18
-    ):
-
-        conflict = True
-
-        conflict_reasons.append(
-            "Trend gücü düşük"
-        )
-
-    # =====================================================
-    # STRICT 1000 SCORE
-    # =====================================================
-
-    strength = raw_strength
-
-    # -----------------------------------------------------
-    # NET YÖN YOK
-    # -----------------------------------------------------
-
-    if decision == "BEKLE":
-
-        strength = min(
-            strength,
-            599
-        )
-
-    # -----------------------------------------------------
-    # 5/5 ANA TEYİT YOKSA 900 YOK
-    # -----------------------------------------------------
-
-    elif confirmation_count < 4:
-
-        strength = min(
-            strength,
-            699
-        )
-
-    elif confirmation_count == 4:
-
-        strength = min(
-            strength,
-            899
-        )
-
-    # -----------------------------------------------------
-    # 5/5 ANA TEYİT
-    # -----------------------------------------------------
-
-    elif confirmation_count == 5:
-
-        strength = min(
-            strength,
-            949
-        )
-
-    # =====================================================
-    # YARDIMCI TEYİT SAYISI
-    # =====================================================
-
-    auxiliary_count = 0
-
-    if decision == "LONG":
-
-        if adx_long_support:
-            auxiliary_count += 1
-
         if vwap_support_long:
-            auxiliary_count += 1
-
-        if bollinger_long:
-            auxiliary_count += 1
-
-        if stoch_long:
-            auxiliary_count += 1
+            confirmation_count += 1
 
     elif decision == "SHORT":
-
-        if adx_short_support:
-            auxiliary_count += 1
-
+        if ema20 is not None and price < ema20:
+            confirmation_count += 1
+        if htf_short:
+            confirmation_count += 1
+        if adx_strong and short_score >= long_score:
+            confirmation_count += 1
+        if vol_direction == "SHORT":
+            confirmation_count += 1
         if vwap_support_short:
-            auxiliary_count += 1
+            confirmation_count += 1
 
-        if bollinger_short:
-            auxiliary_count += 1
+    # 700+ alarm için en az 4/5 ana teyit
+    if decision in ["LONG", "SHORT"] and strength >= VERY_STRONG_SIGNAL:
+        if confirmation_count < 4:
+            strength = min(strength, 699)
 
-        if stoch_short:
-            auxiliary_count += 1
+    # Çok düşük hacim güçlü alarmı engeller.
+    if vol_ratio < 0.70:
+        strength = min(strength, 699)
 
-    # =====================================================
-    # 950+ STRICT
-    # =====================================================
+    # Hacim yönü tersse güçlü alarmı engeller.
+    if decision == "LONG" and vol_direction == "SHORT":
+        strength = min(strength, 699)
 
-    if (
-        decision in ["LONG", "SHORT"]
-        and confirmation_count == 5
-        and not conflict
-        and auxiliary_count >= 2
-    ):
+    if decision == "SHORT" and vol_direction == "LONG":
+        strength = min(strength, 699)
 
-        strength = max(
-            strength,
-            950
-        )
+    # -----------------------------------------------------
+    # TEYİT MESAJI
+    # -----------------------------------------------------
 
-    # =====================================================
-    # 990+ ULTRA
-    # =====================================================
+    if strength >= ELITE_SIGNAL:
+        confirmation = "🚀 ELITE TEYİT"
+    elif strength >= VERY_STRONG_SIGNAL:
+        confirmation = "🔥 ÇOK GÜÇLÜ TEYİT"
+    elif strength >= 600:
+        confirmation = "🟡 TEYİT BEKLE"
+    else:
+        confirmation = "⚪ ZAYIF"
 
-    ultra_conditions = (
-
-        decision in ["LONG", "SHORT"]
-
-        and confirmation_count == 5
-
-        and auxiliary_count == 4
-
-        and not conflict
-
-        and adx_value is not None
-        and adx_value >= 30
-
-        and vol_ratio >= 1.30
-
-        and rsi_value is not None
-
-        and (
-            (
-                decision == "LONG"
-                and rsi_value >= 62
-                and rsi_value <= 72
-            )
-            or
-            (
-                decision == "SHORT"
-                and rsi_value >= 28
-                and rsi_value <= 38
-            )
-        )
-    )
-
-    if ultra_conditions:
-
-        strength = max(
-            strength,
-            990
-        )
-
-    # =====================================================
-    # 1000 MAXIMUM ALIGNMENT
-    # =====================================================
-
-    maximum_conditions = (
-
-        decision in ["LONG", "SHORT"]
-
-        and confirmation_count == 5
-
-        and auxiliary_count == 4
-
-        and not conflict
-
-        and htf_long == (
-            decision == "LONG"
-        )
-
-        and htf_short == (
-            decision == "SHORT"
-        )
-
-        and adx_value is not None
-        and adx_value >= 30
-
-        and vol_ratio >= 1.50
-
-        and vol_direction == decision
-
-        and rsi_value is not None
-
-        and (
-            (
-                decision == "LONG"
-                and 65 <= rsi_value <= 72
-            )
-            or
-            (
-                decision == "SHORT"
-                and 28 <= rsi_value <= 35
-            )
-        )
-
-        and vwap_value is not None
-
-        and (
-            (
-                decision == "LONG"
-                and price > vwap_value
-            )
-            or
-            (
-                decision == "SHORT"
-                and price < vwap_value
-            )
-        )
-
-        and ema20 is not None
-        and ema50 is not None
-
-        and (
-            (
-                decision == "LONG"
-                and price > ema20 > ema50
-            )
-            or
-            (
-                decision == "SHORT"
-                and price < ema20 < ema50
-            )
-        )
-    )
-
-    if maximum_conditions:
-
-        strength = 1000
-
-    strength = int(
-        clamp(
-            strength,
-            1,
-            1000
-        )
-    )
-
-    # =====================================================
-    # GİRİŞ KALİTESİ
-    # =====================================================
-
-    entry_grade, entry_text, entry_score = (
-        calculate_entry_quality(
-            decision,
-            price,
-            ema20,
-            atr_value,
-            rsi_value,
-            adx_value,
-            vol_ratio,
-            confirmation_count,
-            (
-                vwap_support_long
-                if decision == "LONG"
-                else vwap_support_short
-            ),
-            (
-                bollinger_long
-                if decision == "LONG"
-                else bollinger_short
-            ),
-            (
-                stoch_long
-                if decision == "LONG"
-                else stoch_short
-            )
-        )
-    )
-
-    # =====================================================
-    # AŞIRI UZAK GİRİŞ UYARISI
-    # =====================================================
-
-    late_entry = False
-    atr_distance = None
-
-    if (
-        decision in ["LONG", "SHORT"]
-        and ema20 is not None
-        and atr_value is not None
-        and atr_value > 0
-    ):
-
-        atr_distance = (
-            abs(price - ema20)
-            / atr_value
-        )
-
-        if atr_distance >= 2.3:
-
-            late_entry = True
-
-    # =====================================================
-    # SEVİYE
-    # =====================================================
-
-    confirmation = score_label(
-        strength
-    )
-
-    # =====================================================
+    # -----------------------------------------------------
     # NEDENLER
-    # =====================================================
+    # -----------------------------------------------------
 
     if decision == "LONG":
-
         reasons = reasons_long[:]
 
         if macd_hist is not None and macd_hist <= 0:
-
-            reasons.append(
-                "MACD LONG'u desteklemiyor"
-            )
+            reasons.append("MACD pozitif değil")
 
         if rsi_value is not None and rsi_value < 55:
-
-            reasons.append(
-                "RSI tam güçlü değil"
-            )
+            reasons.append("RSI tam güçlü değil")
 
         if vol_direction != "LONG":
-
-            reasons.append(
-                "Hacim LONG'u desteklemiyor"
-            )
-
-        if htf_short:
-
-            reasons.append(
-                "4H trend ters"
-            )
+            reasons.append("Hacim LONG'u desteklemiyor")
 
     elif decision == "SHORT":
-
         reasons = reasons_short[:]
 
         if macd_hist is not None and macd_hist >= 0:
-
-            reasons.append(
-                "MACD SHORT'u desteklemiyor"
-            )
+            reasons.append("MACD negatif değil")
 
         if rsi_value is not None and rsi_value > 45:
-
-            reasons.append(
-                "RSI tam zayıf değil"
-            )
+            reasons.append("RSI tam zayıf değil")
 
         if vol_direction != "SHORT":
-
-            reasons.append(
-                "Hacim SHORT'u desteklemiyor"
-            )
-
-        if htf_long:
-
-            reasons.append(
-                "4H trend ters"
-            )
+            reasons.append("Hacim SHORT'u desteklemiyor")
 
     else:
-
         reasons = [
-            "LONG ve SHORT yeterince ayrışmadı",
+            "LONG ve SHORT skorları yeterince ayrışmadı",
             "Net yön için teyit bekleniyor"
         ]
 
-    # Çelişkileri ekle
-
-    for item in conflict_reasons:
-
-        if item not in reasons:
-
-            reasons.append(
-                f"⚠️ {item}"
-            )
-
-    if late_entry:
-
-        reasons.append(
-            "⚠️ Fiyat trendden uzak — "
-            "geç giriş riski"
-        )
-
-    # =====================================================
+    # -----------------------------------------------------
     # İŞLEM PLANI
-    # =====================================================
+    # -----------------------------------------------------
 
     stop = None
     tp1 = None
     tp2 = None
 
-    if (
-        atr_value is not None
-        and atr_value > 0
-    ):
-
+    if atr_value is not None and atr_value > 0:
         if decision == "LONG":
-
-            stop = (
-                price -
-                atr_value * 1.2
-            )
-
-            tp1 = (
-                price +
-                atr_value * 1.5
-            )
-
-            tp2 = (
-                price +
-                atr_value * 2.5
-            )
+            stop = price - atr_value * 1.2
+            tp1 = price + atr_value * 1.5
+            tp2 = price + atr_value * 2.5
 
         elif decision == "SHORT":
-
-            stop = (
-                price +
-                atr_value * 1.2
-            )
-
-            tp1 = (
-                price -
-                atr_value * 1.5
-            )
-
-            tp2 = (
-                price -
-                atr_value * 2.5
-            )
-
-    # =====================================================
-    # RETURN
-    # =====================================================
+            stop = price + atr_value * 1.2
+            tp1 = price - atr_value * 1.5
+            tp2 = price - atr_value * 2.5
 
     return {
-
         "product": product,
-
         "price": price,
-
         "ema20": ema20,
         "ema50": ema50,
-
         "ema20_4h": ema20_4h,
         "ema50_4h": ema50_4h,
-
         "rsi": rsi_value,
-
         "macd": macd_value,
         "macd_signal": macd_signal,
         "macd_hist": macd_hist,
-
         "adx": adx_value,
         "atr": atr_value,
-
         "stoch": stoch_value,
-
         "upper_bb": upper_bb,
         "middle_bb": middle_bb,
         "lower_bb": lower_bb,
-
         "vwap": vwap_value,
-
         "obv": obv_value,
-
         "volume_ratio": vol_ratio,
-
         "long_volume": long_vol,
         "short_volume": short_vol,
-
-        "volume_direction":
-            vol_direction,
-
-        "htf_long":
-            htf_long,
-
-        "htf_short":
-            htf_short,
-
-        "long_score":
-            int(round(long_score)),
-
-        "short_score":
-            int(round(short_score)),
-
-        "raw_strength":
-            raw_strength,
-
-        "decision":
-            decision,
-
-        "strength":
-            strength,
-
-        "confirmation":
-            confirmation,
-
-        "confirmation_count":
-            confirmation_count,
-
-        "auxiliary_count":
-            auxiliary_count,
-
-        "entry_grade":
-            entry_grade,
-
-        "entry_text":
-            entry_text,
-
-        "entry_score":
-            entry_score,
-
-        "late_entry":
-            late_entry,
-
-        "atr_distance":
-            atr_distance,
-
-        "conflict":
-            conflict,
-
-        "reasons":
-            reasons,
-
-        "stop":
-            stop,
-
-        "tp1":
-            tp1,
-
-        "tp2":
-            tp2
+        "volume_direction": vol_direction,
+        "long_score": int(round(long_score)),
+        "short_score": int(round(short_score)),
+        "decision": decision,
+        "strength": int(strength),
+        "confirmation": confirmation,
+        "confirmation_count": confirmation_count,
+        "reasons": reasons,
+        "stop": stop,
+        "tp1": tp1,
+        "tp2": tp2
     }
 
 
@@ -2424,60 +992,31 @@ def analyze_coin(
 # =========================================================
 
 def build_report(result):
-
     base = result["product"]["base"]
-
     decision = result["decision"]
     strength = result["strength"]
 
     if decision == "LONG":
-
-        direction = "🟢 LONG"
-
+        direction = "🟢 LONG İÇİN UYGUN"
     elif decision == "SHORT":
-
-        direction = "🔴 SHORT"
-
+        direction = "🔴 SHORT İÇİN UYGUN"
     else:
-
         direction = "🟡 BEKLE"
 
-    bars = int(
-        clamp(
-            round(strength / 100),
-            0,
-            10
-        )
-    )
-
-    strength_bar = (
-        "█" * bars +
-        "░" * (10 - bars)
-    )
+    bars = int(clamp(round(strength / 100), 0, 10))
+    strength_bar = "█" * bars + "░" * (10 - bars)
 
     reasons = "\n".join(
-        f"• {x}"
-        for x in result["reasons"][:8]
+        f"• {x}" for x in result["reasons"][:6]
     )
 
-    volume_percent = (
-        result["volume_ratio"] * 100
-    )
+    volume_percent = result["volume_ratio"] * 100
 
-    if volume_percent >= 150:
-
-        volume_level = "🔥 ÇOK YÜKSEK"
-
-    elif volume_percent >= 120:
-
-        volume_level = "🟢 YÜKSEK"
-
+    if volume_percent >= 130:
+        volume_level = "🔥 YÜKSEK"
     elif volume_percent >= 90:
-
-        volume_level = "🟡 NORMAL"
-
+        volume_level = "🟢 NORMAL"
     else:
-
         volume_level = "🔵 DÜŞÜK"
 
     rsi_text = (
@@ -2510,154 +1049,76 @@ def build_report(result):
         else "N/A"
     )
 
-    if result["htf_long"]:
-
-        htf_text = "🟢 LONG TEYİTLİ"
-
-    elif result["htf_short"]:
-
-        htf_text = "🔴 SHORT TEYİTLİ"
-
-    else:
-
-        htf_text = "🟡 NET TEYİT YOK"
-
-    if result["late_entry"]:
-
-        entry_warning = (
-            "⚠️ GEÇ GİRİŞ RİSKİ"
-        )
-
-    else:
-
-        entry_warning = (
-            "🟢 GİRİŞ MESAFESİ UYGUN"
-        )
-
-    text = f"""
-🚀 CRYPTO JET V12.1
+    return f"""
+🚀 CRYPTO JET V12.2
 ━━━━━━━━━━━━━━━━
 
 🪙 {base}
+⏱ Ana zaman dilimi: 1 Saat
+🔎 Trend teyidi: 4 Saat
 
-⏱ Ana TF: 1H
-🔎 Trend teyidi: 4H
+💰 Fiyat: {fmt_price(result["price"])}
 
-💰 Fiyat:
-{fmt_price(result["price"])}
-
-📊 YÖN:
 {direction}
 
 {result["confirmation"]}
 
-💪 JET SCORE
-{strength_bar} {strength}/1000
+💪 SİNYAL GÜCÜ
+{strength_bar} %{strength}
 
-⭐ GİRİŞ KALİTESİ
-{result["entry_text"]}
-Skor: {result["entry_score"]}/100
+📊 SKOR
+🟢 LONG: {result["long_score"]}
+🔴 SHORT: {result["short_score"]}
 
-{entry_warning}
+📈 TEKNİK VERİLER
 
-━━━━━━━━━━━━━━━━
+EMA20: {fmt_price(result["ema20"])}
+EMA50: {fmt_price(result["ema50"])}
 
-🧠 ANA TEYİTLER
+4H EMA20: {fmt_price(result["ema20_4h"])}
+4H EMA50: {fmt_price(result["ema50_4h"])}
 
-1H EMA:
-{fmt_price(result["ema20"])}
+RSI: {rsi_text}
+MACD: {macd_text}
+MACD Histogram: {macd_hist_text}
+ADX: {adx_text}
+Stoch RSI: {stoch_text}
 
-EMA50:
-{fmt_price(result["ema50"])}
+VWAP: {fmt_price(result["vwap"])}
 
-4H:
-{htf_text}
+📊 HACİM
 
-RSI:
-{rsi_text}
+🟢 LONG Hacmi: %{result["long_volume"]:.1f}
+🔴 SHORT Hacmi: %{result["short_volume"]:.1f}
 
-MACD:
-{macd_text}
-
-MACD Histogram:
-{macd_hist_text}
-
-HACİM:
-{result["volume_direction"]}
-
-Ana teyit:
-{result["confirmation_count"]}/5
-
-━━━━━━━━━━━━━━━━
-
-🧠 YARDIMCI TEYİTLER
-
-ADX:
-{adx_text}
-
-VWAP:
-{fmt_price(result["vwap"])}
-
-Stoch RSI:
-{stoch_text}
-
-Bollinger:
-{"🟢 DESTEK" if (
-    result["decision"] == "LONG"
-    and result["upper_bb"] is not None
-) or (
-    result["decision"] == "SHORT"
-    and result["lower_bb"] is not None
-) else "🟡"}
-
-Yardımcı teyit:
-{result["auxiliary_count"]}/4
-
-📊 Hacim oranı:
-%{volume_percent:.0f}
-
+Hacim yönü: {result["volume_direction"]}
+Hacim gücü: %{volume_percent:.0f}
 {volume_level}
-
-━━━━━━━━━━━━━━━━
 
 🧠 NEDEN?
 
 {reasons}
 
-━━━━━━━━━━━━━━━━
-
 🎯 İŞLEM PLANI
 """
 
     if decision in ["LONG", "SHORT"]:
-
         if result["stop"] is not None:
-
             text += (
-                f"\nGiriş: "
-                f"{fmt_price(result['price'])}"
-
-                f"\nStop: "
-                f"{fmt_price(result['stop'])}"
-
-                f"\nTP1: "
-                f"{fmt_price(result['tp1'])}"
-
-                f"\nTP2: "
-                f"{fmt_price(result['tp2'])}"
+                f"\nGiriş: {fmt_price(result['price'])}"
+                f"\nStop: {fmt_price(result['stop'])}"
+                f"\nTP1: {fmt_price(result['tp1'])}"
+                f"\nTP2: {fmt_price(result['tp2'])}\n"
             )
 
-    else:
+        text += f"\nAna teyit: {result['confirmation_count']}/5\n"
 
-        text += (
-            "\nŞu an net işlem yönü yok."
-        )
+    else:
+        text += "\nŞu an net işlem yönü yok.\n"
 
     text += (
-        "\n\n━━━━━━━━━━━━━━━━\n"
-        "⚠️ JET SCORE garanti kâr değildir.\n"
-        "📊 1-1000 teknik uyum skorudur.\n"
-        "🧠 Giriş kalitesi ayrıca hesaplanır."
+        "\n━━━━━━━━━━━━━━━━\n"
+        "⚠️ Sinyal garanti kâr değildir.\n"
     )
 
     return text
@@ -2668,65 +1129,29 @@ Yardımcı teyit:
 # =========================================================
 
 def should_alert(result):
-
     decision = result["decision"]
     strength = result["strength"]
 
-    if decision not in [
-        "LONG",
-        "SHORT"
-    ]:
+    if decision not in ["LONG", "SHORT"]:
         return False
 
-    if strength < ALARM_THRESHOLD:
+    if strength < VERY_STRONG_SIGNAL:
         return False
 
     product_id = result["product"]["id"]
 
-    # Seviye
-
-    if strength >= ULTRA_THRESHOLD:
-
-        level = "ULTRA"
-
-    elif strength >= EXTREME_THRESHOLD:
-
-        level = "EXTREME"
-
-    elif strength >= ELITE_THRESHOLD:
-
-        level = "ELITE"
-
-    elif strength >= STRONG_THRESHOLD:
-
-        level = "STRONG"
-
-    else:
-
-        level = "ALARM"
-
-    # 10 puanlık gruplar
-    key = (
-        decision,
-        level,
-        strength // 10
-    )
+    # Aynı coin + aynı yön + benzer güç,
+    # 1 saat içinde tekrar gönderilmez.
+    key = (decision, strength // 2)
 
     now = time.time()
-
-    previous = alert_state.get(
-        product_id
-    )
+    previous = alert_state.get(product_id)
 
     if previous:
-
         if (
             previous["key"] == key
-            and
-            now - previous["time"]
-            < ALERT_COOLDOWN
+            and now - previous["time"] < ALERT_COOLDOWN
         ):
-
             return False
 
     alert_state[product_id] = {
@@ -2741,106 +1166,61 @@ def should_alert(result):
 # JET ALARM
 # =========================================================
 
+def get_alarm_intensity(strength):
+    if strength >= MAXIMUM_SIGNAL:
+        return "MAXIMUM", "🚨🔔🔔🔔🔔", "👑"
+    if strength >= ULTRA_SIGNAL:
+        return "ULTRA", "🚨🔔🔔🔔", "☢️"
+    if strength >= EXTREME_SIGNAL:
+        return "EXTREME", "🚨🔔🔔🔔", "💥"
+    if strength >= ELITE_SIGNAL:
+        return "ELITE", "🔔🔔🔔", "🚀"
+    if strength >= STRONG_SIGNAL:
+        return "STRONG", "🔔🔔", "🔥"
+    return "JET ALARM", "🔔", "🟢"
+
+
 def build_alert(result):
-
     base = result["product"]["base"]
-
     strength = result["strength"]
+    level, bells, icon = get_alarm_intensity(strength)
+    direction_icon = "🟢" if result["decision"] == "LONG" else "🔴"
+    return f"""
+🚀 JET ALARM — {level} {icon}
+━━━━━━━━━━━━━━━━
 
-    if strength >= MAX_THRESHOLD:
+🪙 {base}
+{direction_icon} Yön: {result["decision"]}
+💪 Güç: %{strength}/1000
+{bells} Alarm seviyesi: {level}
+⏱ Ana zaman dilimi: 1H
+🔎 4H trend teyidi: {'EVET' if result["confirmation_count"] >= 4 else 'HAYIR'}
 
-        title = (
-            "👑 JET ALARM — MAXIMUM"
-        )
+🎯 Giriş: {fmt_price(result["price"])}
+🛑 Stop: {fmt_price(result["stop"])}
+🎯 TP1: {fmt_price(result["tp1"])}
+🎯 TP2: {fmt_price(result["tp2"])}
 
-    elif strength >= ULTRA_THRESHOLD:
+📊 LONG SKOR: {result["long_score"]}/1000
+📊 SHORT SKOR: {result["short_score"]}/1000
 
-        title = (
-            "☢️ JET ALARM — ULTRA"
-        )
-
-    elif strength >= EXTREME_THRESHOLD:
-
-        title = (
-            "💥 JET ALARM — EXTREME"
-        )
-
-    elif strength >= ELITE_THRESHOLD:
-
-        title = (
-            "🚀 JET ALARM — ELITE"
-        )
-
-    elif strength >= STRONG_THRESHOLD:
-
-        title = (
-            "🔥 JET ALARM — STRONG"
-        )
-
-    else:
-
-        title = (
-            "🟢 JET ALARM"
-        )
-
-    if result["htf_long"]:
-
-        htf = "🟢 LONG"
-
-    elif result["htf_short"]:
-
-        htf = "🔴 SHORT"
-
-    else:
-
-        htf = "🟡 NET DEĞİL"
-
-    return (
-        f"{title}\n"
-        f"━━━━━━━━━━━━━━━━\n\n"
-
-        f"🪙 {base}\n"
-
-        f"📊 Yön: "
-        f"{result['decision']}\n"
-
-        f"💪 JET SCORE: "
-        f"{strength}/1000\n"
-
-        f"⭐ Giriş: "
-        f"{result['entry_grade']}\n"
-
-        f"⏱ Ana TF: 1H\n"
-
-        f"🔎 4H: "
-        f"{htf}\n"
-
-        f"📊 Ana teyit: "
-        f"{result['confirmation_count']}/5\n\n"
-
-        f"{build_report(result)}"
-    )
-
+🚀 CRYPTO JET V12.2
+━━━━━━━━━━━━━━━━
+⚠️ Sinyal garanti kâr değildir.
+"""
 
 # =========================================================
-# MARKET SCAN
+# MARKET TARAMA
+# SADECE 700+ SONUÇLAR TELEGRAM'A GİDER
 # =========================================================
 
-def market_scan(
-    chat_id=None,
-    send_alerts=False
-):
-
+def market_scan(chat_id=None, send_alerts=False):
     products = get_products()
 
     if not products:
-
-        print(
-            "Coin listesi alınamadı."
-        )
+        print("Coin listesi alınamadı.")
 
         if chat_id:
-
             send_message(
                 chat_id,
                 "❌ Coinbase coin listesi alınamadı."
@@ -2849,31 +1229,18 @@ def market_scan(
         return []
 
     results = []
-    strong_results = []
+    very_strong = []
 
-    print(
-        f"🚀 V12.1 STRICT tarama başladı: "
-        f"{len(products)} coin"
-    )
+    print(f"🚀 Tarama başladı: {len(products)} coin")
 
-    for index, product in enumerate(
-        products,
-        1
-    ):
-
+    for index, product in enumerate(products, 1):
         try:
-
-            candles = get_candles(
-                product["id"]
-            )
+            candles = get_candles(product["id"])
 
             if len(candles) < MIN_CANDLES:
                 continue
 
-            result = analyze_coin(
-                product,
-                candles
-            )
+            result = analyze_coin(product, candles)
 
             if result is None:
                 continue
@@ -2881,28 +1248,21 @@ def market_scan(
             results.append(result)
 
             if (
-                result["decision"]
-                in ["LONG", "SHORT"]
-                and
-                result["strength"]
-                >= ALARM_THRESHOLD
+                result["decision"] in ["LONG", "SHORT"]
+                and result["strength"] >= VERY_STRONG_SIGNAL
             ):
-
-                strong_results.append(
-                    result
-                )
+                very_strong.append(result)
 
             print(
                 f"[{index}/{len(products)}] "
                 f"{product['base']} "
                 f"{result['decision']} "
-                f"{result['strength']}/1000"
+                f"%{result['strength']}"
             )
 
             time.sleep(0.08)
 
         except Exception as e:
-
             print(
                 f"{product['id']} analiz hatası:",
                 e
@@ -2913,167 +1273,101 @@ def market_scan(
         reverse=True
     )
 
-    strong_results.sort(
+    very_strong.sort(
         key=lambda x: x["strength"],
         reverse=True
     )
 
-    # =====================================================
-    # ALARMLAR
-    # =====================================================
+    # -----------------------------------------------------
+    # SADECE ÇOK GÜÇLÜ ALARMLAR
+    # -----------------------------------------------------
 
     if chat_id and send_alerts:
-
-        for result in strong_results:
-
+        for result in very_strong:
             if should_alert(result):
-
                 send_message(
                     chat_id,
                     build_alert(result)
                 )
 
-    # =====================================================
+    # -----------------------------------------------------
     # ÖZET
-    # =====================================================
+    # ARTIK TÜM COİNLERİ TELEGRAM'A DÖKMEZ.
+    # -----------------------------------------------------
 
     if chat_id:
-
         summary = (
-            "🚀 CRYPTO JET V12.1\n"
+            "🚀 CRYPTO JET V12.2\n"
             "━━━━━━━━━━━━━━━━\n\n"
-
-            f"🪙 Analiz edilen: "
-            f"{len(results)} coin\n"
-
-            f"🔥 700+: "
-            f"{len(strong_results)}\n\n"
+            f"🪙 Analiz edilen: {len(results)} coin\n"
+            f"🔥 Çok güçlü (700+): {len(very_strong)}\n\n"
         )
 
-        if strong_results:
+        if very_strong:
+            summary += "🚨 ÇOK GÜÇLÜ SİNYALLER\n\n"
 
-            summary += (
-                "🚨 STRONG SIGNALS\n\n"
-            )
-
-            for result in strong_results[:20]:
-
+            for result in very_strong[:20]:
                 base = result["product"]["base"]
-
-                icon = (
-                    "🟢"
-                    if result["decision"] == "LONG"
-                    else "🔴"
-                )
-
-                score = result["strength"]
-
-                if score >= 1000:
-
-                    level = "👑"
-
-                elif score >= 990:
-
-                    level = "☢️"
-
-                elif score >= 950:
-
-                    level = "💥"
-
-                elif score >= 900:
-
-                    level = "🚀"
-
-                elif score >= 800:
-
-                    level = "🔥"
-
-                else:
-
-                    level = "🟢"
+                icon = "🟢" if result["decision"] == "LONG" else "🔴"
 
                 summary += (
                     f"{base:<10} "
                     f"{icon} "
                     f"{result['decision']} "
-                    f"{score}/1000 "
-                    f"{level}\n"
+                    f"%{result['strength']}\n"
                 )
 
         else:
-
             summary += (
-                "Şu an 700+ güçlü sinyal yok.\n"
+                "Şu an 700+ çok güçlü sinyal yok.\n"
             )
 
-        send_message(
-            chat_id,
-            summary
-        )
+        send_message(chat_id, summary)
 
     return results
 
 
 # =========================================================
 # BTC
+# /btc KOMUTU DETAYLI ANALİZ GÖSTERİR.
 # =========================================================
 
 def btc_analysis(chat_id):
-
     products = get_products()
 
     btc = None
 
     for product in products:
-
         if product["base"] == "BTC":
-
             btc = product
             break
 
     if btc is None:
-
-        send_message(
-            chat_id,
-            "❌ BTC bulunamadı."
-        )
-
+        send_message(chat_id, "❌ BTC bulunamadı.")
         return
 
     send_message(
         chat_id,
-        "₿ BTC V12.1 STRICT "
-        "1H + 4H analiz ediliyor..."
+        "₿ BTC 1H + 4H analiz ediliyor..."
     )
 
-    candles = get_candles(
-        btc["id"]
-    )
+    candles = get_candles(btc["id"])
 
     if len(candles) < MIN_CANDLES:
-
         send_message(
             chat_id,
-            "❌ BTC için yeterli mum "
-            "verisi alınamadı."
+            "❌ BTC için yeterli mum verisi alınamadı."
         )
-
         return
 
-    result = analyze_coin(
-        btc,
-        candles
-    )
+    result = analyze_coin(btc, candles)
 
     if result:
-
         send_message(
             chat_id,
             build_report(result)
         )
-
     else:
-
         send_message(
             chat_id,
             "❌ BTC analizi alınamadı."
@@ -3085,22 +1379,13 @@ def btc_analysis(chat_id):
 # =========================================================
 
 def send_status(chat_id):
-
-    status = (
-        "🟢 AKTİF"
-        if active_chat_id
-        else
-        "🟡 BEKLEMEDE"
-    )
-
-    product_count = len(
-        get_products()
-    )
+    status = "🟢 AKTİF" if active_chat_id else "🟡 BEKLEMEDE"
+    product_count = len(get_products())
 
     send_message(
         chat_id,
         f"""
-🚀 CRYPTO JET V12.1
+🚀 CRYPTO JET V12.2
 ━━━━━━━━━━━━━━━━
 
 Durum: {status}
@@ -3111,169 +1396,93 @@ Durum: {status}
 ⏱ Tarama:
 10 dakika
 
-🧠 Sistem:
-STRICT 1000 SCORE
-
-🟢 Alarm:
+🔥 Çok güçlü alarm:
 700+
-
-🔥 Strong:
-800+
 
 🚀 Elite:
 900+
 
-💥 Extreme:
-950+
-
-☢️ Ultra:
-990+
-
-👑 Maximum:
-1000
-
-⭐ Giriş Kalitesi:
-A+ / A / B / C / D
-
 ⏱ Alarm cooldown:
 1 saat
 
-━━━━━━━━━━━━━━━━
+📊 Ana sistem:
+1H EMA + RSI + MACD
+1H Hacim + ADX + VWAP
+Bollinger + Stoch RSI
 
-📊 SCORE SİSTEMİ
+🔎 Trend teyidi:
+4H EMA20 + EMA50
 
-1H EMA: 250
-4H Trend: 200
-RSI: 150
-MACD: 100
-Hacim: 100
+📌 Telegram:
+Sadece 700+ sinyaller
 
-ADX: 50
-VWAP: 50
-Bollinger: 50
-Stoch RSI: 50
-
-━━━━━━━━━━━━━━━━
-
-📌 Sadece 700+ sinyaller
-alarm olarak gönderilir.
-
-⚠️ Score gerçek kazanma
-olasılığı değildir.
+⚠️ Sinyaller garanti kâr değildir.
 """
     )
 
 
 # =========================================================
-# KOMUTLAR
+# TELEGRAM KOMUTLARI
 # =========================================================
 
-def handle_command(
-    chat_id,
-    text
-):
-
+def handle_command(chat_id, text):
     global active_chat_id
     global last_scan_time
 
-    text = (
-        text
-        .strip()
-        .lower()
-    )
+    active_chat_id = chat_id
+    text = text.strip().lower()
 
-    print(
-        "Telegram komutu:",
-        text
-    )
-
-    # =====================================================
-    # START
-    # =====================================================
+    print("Telegram komutu:", text)
 
     if text == "/start":
-
         send_message(
             chat_id,
             """
-🚀 CRYPTO JET V12.1
+🚀 CRYPTO JET V12.2
 
-STRICT 1000 SCORE sistemi aktif. ✅
+Bot aktif. ✅
 
 Komutlar:
 
 /jet → Otomatik sistemi başlat
-/btc → BTC 1H + 4H analiz
+/btc → BTC 1H + 4H analizi
 /scan → Tüm coinleri tara
 /status → Sistem durumu
-/stop → Jet Alarm'ı durdur
+/stop → Jet alarmını durdur
 
-🟢 700+ → JET ALARM
-🔥 800+ → STRONG
-🚀 900+ → ELITE
-💥 950+ → EXTREME
-☢️ 990+ → ULTRA
-👑 1000 → MAXIMUM
+🔥 Alarm: sadece 700+
+🚀 Elite: 900+
+⏱ Otomatik tarama: 10 dakika
 
-⭐ Giriş kalitesi ayrıca hesaplanır.
-
-⏱ Otomatik tarama:
-10 dakika
-
-⚠️ Score garanti kâr değildir.
+⚠️ Sinyaller garanti kâr değildir.
 """
         )
 
-    # =====================================================
-    # JET
-    # =====================================================
-
     elif text == "/jet":
-
-        active_chat_id = chat_id
-
         send_message(
             chat_id,
             """
-🚀 CRYPTO JET V12.1 AKTİF
+🚀 CRYPTO JET AKTİF
 
 ━━━━━━━━━━━━━━━━
 
 ₿ BTC                 ✅
 🪙 TÜM COİNLER         ✅
-
-📊 1H ANA ANALİZ       ✅
+📊 1H ANALİZ           ✅
 🔎 4H TREND TEYİDİ     ✅
+📈 LONG/SHORT HACİM    ✅
+🔥 700+ ALARM          ✅
+🚀 900+ ELITE          ✅
+⏱ 10 DAKİKA TARAMA    ✅
 
-🧠 STRICT 1000 SCORE   ✅
-
-📈 EMA                 ✅
-📊 RSI                 ✅
-📉 MACD                ✅
-📦 HACİM               ✅
-
-ADX                    ✅
-VWAP                   ✅
-BOLLINGER              ✅
-STOCH RSI              ✅
-
-⭐ GİRİŞ KALİTESİ       ✅
-⚠️ GEÇ GİRİŞ KONTROLÜ  ✅
-
-━━━━━━━━━━━━━━━━
-
-🟢 700+ JET ALARM
-🔥 800+ STRONG
-🚀 900+ ELITE
-💥 950+ EXTREME
-☢️ 990+ ULTRA
-👑 1000 MAXIMUM
-
-⏱ 10 DAKİKA TARAMA
+📌 Telegram'da sadece
+ÇOK GÜÇLÜ sinyaller gösterilecek.
 
 🔥 İlk tarama başlıyor...
 """
         )
+
+        active_chat_id = chat_id
 
         results = market_scan(
             chat_id,
@@ -3283,47 +1492,26 @@ STOCH RSI              ✅
         last_scan_time = time.time()
 
         if results:
-
             send_message(
                 chat_id,
-                """
-✅ İlk V12.1 tarama tamamlandı.
-
-⏱ Jet 10 dakikada bir
-otomatik tarama yapacak.
-
-🟢 Sadece 700+ sinyaller
-alarm olarak gönderilecek.
-"""
+                "✅ İlk tarama tamamlandı.\n"
+                "⏱ Jet 10 dakikada bir tarama yapacak.\n"
+                "🔥 Sadece 700+ sinyaller alarm olarak gönderilecek."
             )
 
-    # =====================================================
-    # BTC
-    # =====================================================
-
     elif text == "/btc":
-
-        btc_analysis(
-            chat_id
-        )
-
-    # =====================================================
-    # SCAN
-    # =====================================================
+        btc_analysis(chat_id)
 
     elif text == "/scan":
-
         send_message(
             chat_id,
             """
-🔎 CRYPTO JET V12.1
+🔎 CRYPTO JET
 
 Tüm uygun Coinbase coinleri
-1H + 4H STRICT sistemle taranıyor...
+1H + 4H sistemiyle taranıyor...
 
-🟢 700+ güçlü sinyaller
-Telegram'a gönderilecek.
-
+🔥 Telegram'a sadece 700+ sinyaller gönderilecek.
 ⏱ Bu işlem biraz sürebilir.
 """
         )
@@ -3336,28 +1524,15 @@ Telegram'a gönderilecek.
         last_scan_time = time.time()
 
         if results:
-
             send_message(
                 chat_id,
-                "✅ V12.1 tarama tamamlandı."
+                "✅ Tarama tamamlandı."
             )
 
-    # =====================================================
-    # STATUS
-    # =====================================================
-
     elif text == "/status":
-
-        send_status(
-            chat_id
-        )
-
-    # =====================================================
-    # STOP
-    # =====================================================
+        send_status(chat_id)
 
     elif text == "/stop":
-
         active_chat_id = None
 
         send_message(
@@ -3365,21 +1540,16 @@ Telegram'a gönderilecek.
             """
 🛑 CRYPTO JET DURDURULDU
 
-Otomatik tarama ve
-Jet Alarm devre dışı.
+Otomatik tarama ve Jet Alarm
+devre dışı bırakıldı.
 
-Tekrar başlat:
+Tekrar başlatmak için:
 
 /jet
 """
         )
 
-    # =====================================================
-    # UNKNOWN
-    # =====================================================
-
     elif text.startswith("/"):
-
         send_message(
             chat_id,
             """
@@ -3401,7 +1571,6 @@ Kullan:
 # =========================================================
 
 def automatic_scan():
-
     global last_scan_time
 
     if not active_chat_id:
@@ -3409,17 +1578,12 @@ def automatic_scan():
 
     now = time.time()
 
-    if (
-        now - last_scan_time
-        < SCAN_INTERVAL
-    ):
+    if now - last_scan_time < SCAN_INTERVAL:
         return
 
     last_scan_time = now
 
-    print(
-        "⏱ Otomatik V12.1 tarama başladı."
-    )
+    print("⏱ Otomatik 10 dakikalık tarama başladı.")
 
     results = market_scan(
         None,
@@ -3427,36 +1591,24 @@ def automatic_scan():
     )
 
     if not results:
-
-        print(
-            "Otomatik tarama sonuç vermedi."
-        )
-
+        print("Otomatik tarama sonuç vermedi.")
         return
 
-    strong_results = [
-
+    very_strong = [
         x for x in results
-
         if (
-            x["decision"]
-            in ["LONG", "SHORT"]
-
-            and
-            x["strength"]
-            >= ALARM_THRESHOLD
+            x["decision"] in ["LONG", "SHORT"]
+            and x["strength"] >= VERY_STRONG_SIGNAL
         )
     ]
 
     print(
-        f"🔥 700+ güçlü sinyal: "
-        f"{len(strong_results)}"
+        f"🔥 700+ çok güçlü sinyal: "
+        f"{len(very_strong)}"
     )
 
-    for result in strong_results:
-
+    for result in very_strong:
         if should_alert(result):
-
             send_message(
                 active_chat_id,
                 build_alert(result)
@@ -3468,24 +1620,15 @@ def automatic_scan():
 # =========================================================
 
 def main():
-
     global active_chat_id
 
-    print(
-        "🚀 CRYPTO JET V12.1 "
-        "STRICT 1000 SCORE BAŞLADI"
-    )
-
-    print(
-        "Telegram polling başlatılıyor..."
-    )
+    print("🚀 CRYPTO JET V12.2 BAŞLADI")
+    print("Telegram polling başlatılıyor...")
 
     offset = 0
 
     while True:
-
         try:
-
             response = session.get(
                 f"{TELEGRAM_API}/getUpdates",
                 params={
@@ -3496,54 +1639,30 @@ def main():
             )
 
             if response.status_code != 200:
-
                 print(
                     "Telegram HTTP hata:",
                     response.status_code
                 )
-
                 time.sleep(5)
-
                 continue
 
             data = response.json()
 
             if not data.get("ok"):
-
-                print(
-                    "Telegram API hata:",
-                    data
-                )
-
+                print("Telegram API hata:", data)
                 time.sleep(5)
-
                 continue
 
-            for update in data.get(
-                "result",
-                []
-            ):
+            for update in data.get("result", []):
+                offset = update["update_id"] + 1
 
-                offset = (
-                    update["update_id"]
-                    + 1
-                )
-
-                message = update.get(
-                    "message"
-                )
+                message = update.get("message")
 
                 if not message:
                     continue
 
-                chat_id = message[
-                    "chat"
-                ]["id"]
-
-                text = message.get(
-                    "text",
-                    ""
-                )
+                chat_id = message["chat"]["id"]
+                text = message.get("text", "")
 
                 if not text:
                     continue
@@ -3554,24 +1673,14 @@ def main():
                 )
 
             automatic_scan()
-
             time.sleep(1)
 
         except KeyboardInterrupt:
-
-            print(
-                "Crypto Jet kapatıldı."
-            )
-
+            print("Crypto Jet kapatıldı.")
             break
 
         except Exception as e:
-
-            print(
-                "ANA DÖNGÜ HATASI:",
-                e
-            )
-
+            print("ANA DÖNGÜ HATASI:", e)
             time.sleep(5)
 
 
