@@ -111,7 +111,7 @@ def send_message(chat_id, text, disable_notification=False):
         for part in parts:
             response = session.post(
                 f"{TELEGRAM_API}/sendMessage",
-                json={"chat_id": chat_id, "text": part},
+                json={"chat_id": chat_id, "text": part, "disable_notification": disable_notification},
                 timeout=20
             )
 
@@ -717,10 +717,10 @@ def analyze_coin(product, candles):
     # 1H EMA = 25
     if ema20 is not None and ema50 is not None:
         if price > ema20 > ema50:
-            long_score += 2050
+            long_score += 250
             reasons_long.append("1H EMA trend güçlü yukarı")
         elif price < ema20 < ema50:
-            short_score += 2050
+            short_score += 250
             reasons_short.append("1H EMA trend güçlü aşağı")
         elif price > ema50:
             long_score += 125
@@ -1006,9 +1006,7 @@ def build_report(result):
     bars = int(clamp(round(strength / 100), 0, 10))
     strength_bar = "█" * bars + "░" * (10 - bars)
 
-    reasons = "\n".join(
-        f"• {x}" for x in result["reasons"][:6]
-    )
+    reasons = "\n".join(f"• {x}" for x in result["reasons"][:6])
 
     volume_percent = result["volume_ratio"] * 100
 
@@ -1019,38 +1017,14 @@ def build_report(result):
     else:
         volume_level = "🔵 DÜŞÜK"
 
-    rsi_text = (
-        f'{result["rsi"]:.2f}'
-        if result["rsi"] is not None
-        else "N/A"
-    )
+    rsi_text = f'{result["rsi"]:.2f}' if result["rsi"] is not None else "N/A"
+    macd_text = f'{result["macd"]:.6f}' if result["macd"] is not None else "N/A"
+    macd_hist_text = f'{result["macd_hist"]:.6f}' if result["macd_hist"] is not None else "N/A"
+    adx_text = f'{result["adx"]:.2f}' if result["adx"] is not None else "N/A"
+    stoch_text = f'{result["stoch"]:.1f}' if result["stoch"] is not None else "N/A"
 
-    macd_text = (
-        f'{result["macd"]:.6f}'
-        if result["macd"] is not None
-        else "N/A"
-    )
-
-    macd_hist_text = (
-        f'{result["macd_hist"]:.6f}'
-        if result["macd_hist"] is not None
-        else "N/A"
-    )
-
-    adx_text = (
-        f'{result["adx"]:.2f}'
-        if result["adx"] is not None
-        else "N/A"
-    )
-
-    stoch_text = (
-        f'{result["stoch"]:.1f}'
-        if result["stoch"] is not None
-        else "N/A"
-    )
-
-    return f"""
-🚀 CRYPTO JET V12.2
+    text = f"""
+🚀 CRYPTO JET V12.2.1 FIXED
 ━━━━━━━━━━━━━━━━
 
 🪙 {base}
@@ -1064,11 +1038,11 @@ def build_report(result):
 {result["confirmation"]}
 
 💪 SİNYAL GÜCÜ
-{strength_bar} %{strength}
+{strength_bar} %{strength}/1000
 
 📊 SKOR
-🟢 LONG: {result["long_score"]}
-🔴 SHORT: {result["short_score"]}
+🟢 LONG: {result["long_score"]}/1000
+🔴 SHORT: {result["short_score"]}/1000
 
 📈 TEKNİK VERİLER
 
@@ -1112,7 +1086,6 @@ Hacim gücü: %{volume_percent:.0f}
             )
 
         text += f"\nAna teyit: {result['confirmation_count']}/5\n"
-
     else:
         text += "\nŞu an net işlem yönü yok.\n"
 
