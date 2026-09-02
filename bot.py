@@ -4,18 +4,25 @@ import math
 import requests
 
 # =========================================================
-# CRYPTO JET V12.2
+# CRYPTO JET V12.2.2
 # 1H ANA SİNYAL + 4H TREND TEYİDİ
 # STRICT 1000 SCORE — 700+ ALARM / 800+ STRONG / 900+ ELITE / 950+ EXTREME / 990+ ULTRA / 1000 MAXIMUM
 # =========================================================
 
-TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+
+if not TOKEN:
+    raise RuntimeError(
+        "TELEGRAM_BOT_TOKEN GitHub Secret bulunamadı. "
+        "Repository Settings > Secrets and variables > Actions "
+        "bölümünden TELEGRAM_BOT_TOKEN ekleyin."
+    )
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 COINBASE_API = "https://api.exchange.coinbase.com"
 
 session = requests.Session()
-session.headers.update({"User-Agent": "CryptoJet/12.2"})
+session.headers.update({"User-Agent": "CryptoJet/12.2.2"})
 
 # =========================================================
 # AYARLAR
@@ -239,6 +246,13 @@ def get_products(force=False):
 # =========================================================
 
 def get_candles(product_id):
+    """Fetch recent closed 1H candles for both 1H analysis and 4H aggregation.
+
+    Coinbase Exchange candles are limited to a finite recent window. The
+    returned 1H set is therefore kept recent and then aggregated into 4H
+    candles locally. The currently-forming 1H candle is excluded so signals
+    are based only on closed candles.
+    """
     data = coinbase_get(
         f"/products/{product_id}/candles",
         {"granularity": 3600}
@@ -247,28 +261,51 @@ def get_candles(product_id):
     if not isinstance(data, list):
         return []
 
+    now = time.time()
     candles = []
 
     for row in data:
         if not isinstance(row, list) or len(row) < 6:
             continue
 
-        candle = {
-            "time": safe_float(row[0]),
-            "low": safe_float(row[1]),
-            "high": safe_float(row[2]),
-            "open": safe_float(row[3]),
-            "close": safe_float(row[4]),
-            "volume": safe_float(row[5])
-        }
+        timestamp = safe_float(row[0])
+        low = safe_float(row[1])
+        high = safe_float(row[2])
+        open_price = safe_float(row[3])
+        close = safe_float(row[4])
+        volume = safe_float(row[5])
 
-        if candle["close"] <= 0:
+        # Only accept sane, closed candles.
+        if timestamp <= 0 or timestamp + 3600 > now:
+            continue
+        if min(open_price, close, low) <= 0:
+            continue
+        if high < max(open_price, close, low):
+            continue
+        if volume < 0:
             continue
 
-        candles.append(candle)
+        candles.append({
+            "time": timestamp,
+            "low": low,
+            "high": high,
+            "open": open_price,
+            "close": close,
+            "volume": volume
+        })
 
     candles.sort(key=lambda x: x["time"])
-    return candles
+
+    # Safety against duplicate rows from an API response.
+    unique = {}
+    for candle in candles:
+        unique[int(candle["time"])] = candle
+
+    candles = [unique[k] for k in sorted(unique)]
+
+    # Coinbase's practical candle response is finite; keep the newest
+    # 300 closed 1H candles to ensure enough history for 4H EMA50.
+    return candles[-300:]
 
 
 # =========================================================
@@ -276,6 +313,7 @@ def get_candles(product_id):
 # =========================================================
 
 def aggregate_4h(candles):
+    """Aggregate closed 1H candles into complete 4H candles."""
     if len(candles) < 4:
         return []
 
@@ -284,16 +322,16 @@ def aggregate_4h(candles):
     for candle in candles:
         timestamp = int(candle["time"])
         bucket_time = (timestamp // 14400) * 14400
-
         buckets.setdefault(bucket_time, []).append(candle)
 
     result = []
 
     for bucket_time in sorted(buckets):
-        bucket = buckets[bucket_time]
-        bucket.sort(key=lambda x: x["time"])
+        bucket = sorted(buckets[bucket_time], key=lambda x: x["time"])
 
-        if len(bucket) < 4:
+        # A complete 4H candle must contain four distinct 1H candles.
+        timestamps = {int(x["time"]) for x in bucket}
+        if len(timestamps) != 4:
             continue
 
         result.append({
@@ -699,6 +737,8 @@ def analyze_coin(product, candles):
     ema20_4h = None
     ema50_4h = None
 
+    # 50 complete 4H candles are required for a real EMA50 trend check.
+    # With up to 300 closed 1H candles, we normally have ~74 complete 4H bars.
     if len(candles_4h) >= 50:
         closes_4h = [x["close"] for x in candles_4h]
         ema20_4h = ema(closes_4h, 20)
@@ -1024,7 +1064,7 @@ def build_report(result):
     stoch_text = f'{result["stoch"]:.1f}' if result["stoch"] is not None else "N/A"
 
     text = f"""
-🚀 CRYPTO JET V12.2.1 FIXED
+🚀 CRYPTO JET V12.2.2 FIXED
 ━━━━━━━━━━━━━━━━
 
 🪙 {base}
@@ -1177,7 +1217,7 @@ def build_alert(result):
 📊 LONG SKOR: {result["long_score"]}/1000
 📊 SHORT SKOR: {result["short_score"]}/1000
 
-🚀 CRYPTO JET V12.2
+🚀 CRYPTO JET V12.2.2
 ━━━━━━━━━━━━━━━━
 ⚠️ Sinyal garanti kâr değildir.
 """
@@ -1358,7 +1398,7 @@ def send_status(chat_id):
     send_message(
         chat_id,
         f"""
-🚀 CRYPTO JET V12.2
+🚀 CRYPTO JET V12.2.2
 ━━━━━━━━━━━━━━━━
 
 Durum: {status}
@@ -1402,7 +1442,6 @@ def handle_command(chat_id, text):
     global active_chat_id
     global last_scan_time
 
-    active_chat_id = chat_id
     text = text.strip().lower()
 
     print("Telegram komutu:", text)
@@ -1411,7 +1450,7 @@ def handle_command(chat_id, text):
         send_message(
             chat_id,
             """
-🚀 CRYPTO JET V12.2
+🚀 CRYPTO JET V12.2.2
 
 Bot aktif. ✅
 
@@ -1432,6 +1471,8 @@ Komutlar:
         )
 
     elif text == "/jet":
+        active_chat_id = chat_id
+
         send_message(
             chat_id,
             """
@@ -1455,8 +1496,6 @@ Komutlar:
 """
         )
 
-        active_chat_id = chat_id
-
         results = market_scan(
             chat_id,
             send_alerts=True
@@ -1464,13 +1503,12 @@ Komutlar:
 
         last_scan_time = time.time()
 
-        if results:
-            send_message(
-                chat_id,
-                "✅ İlk tarama tamamlandı.\n"
-                "⏱ Jet 10 dakikada bir tarama yapacak.\n"
-                "🔥 Sadece 700+ sinyaller alarm olarak gönderilecek."
-            )
+        send_message(
+            chat_id,
+            "✅ İlk tarama tamamlandı.\n"
+            "⏱ Jet 10 dakikada bir tarama yapacak.\n"
+            "🔥 Sadece 700+ sinyaller alarm olarak gönderilecek."
+        )
 
     elif text == "/btc":
         btc_analysis(chat_id)
@@ -1496,11 +1534,10 @@ Tüm uygun Coinbase coinleri
 
         last_scan_time = time.time()
 
-        if results:
-            send_message(
-                chat_id,
-                "✅ Tarama tamamlandı."
-            )
+        send_message(
+            chat_id,
+            "✅ Tarama tamamlandı."
+        )
 
     elif text == "/status":
         send_status(chat_id)
@@ -1546,7 +1583,9 @@ Kullan:
 def automatic_scan():
     global last_scan_time
 
-    if not active_chat_id:
+    chat_id = active_chat_id
+
+    if not chat_id:
         return
 
     now = time.time()
@@ -1554,14 +1593,16 @@ def automatic_scan():
     if now - last_scan_time < SCAN_INTERVAL:
         return
 
-    last_scan_time = now
-
     print("⏱ Otomatik 10 dakikalık tarama başladı.")
 
+    # The polling loop is single-threaded, so capture the active chat
+    # before the long scan. /stop will be processed after this scan.
     results = market_scan(
         None,
         send_alerts=False
     )
+
+    last_scan_time = time.time()
 
     if not results:
         print("Otomatik tarama sonuç vermedi.")
@@ -1583,7 +1624,7 @@ def automatic_scan():
     for result in very_strong:
         if should_alert(result):
             send_message(
-                active_chat_id,
+                chat_id,
                 build_alert(result)
             )
 
@@ -1595,7 +1636,7 @@ def automatic_scan():
 def main():
     global active_chat_id
 
-    print("🚀 CRYPTO JET V12.2 BAŞLADI")
+    print("🚀 CRYPTO JET V12.2.2 BAŞLADI")
     print("Telegram polling başlatılıyor...")
 
     offset = 0
