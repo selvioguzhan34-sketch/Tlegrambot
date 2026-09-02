@@ -1,161 +1,106 @@
 import os
 import time
 import requests
-from datetime import datetime, timezone
+import math
+from datetime import datetime
 
-# ============================================================
-# 🚀 CRYPTO JET V7.1
-# 1 SAAT ANALİZ
-# 10 DAKİKADA BİR TARAMA
-# PAPER TRADE
-# GERÇEK İŞLEM YOK
-# ============================================================
+# =========================================================
+# CRYPTO JET V7.2
+# Coinbase teknik analiz + Binance Long/Short opsiyonel
+# Paper Trading
+# =========================================================
 
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
-BINANCE_API = "https://fapi.binance.com"
+COINBASE_API = "https://api.exchange.coinbase.com"
 
 TIMEFRAME = "1h"
 AUTO_INTERVAL = 10 * 60
 
 COINS = {
-    "BTC": "BTCUSDT",
-    "ETH": "ETHUSDT",
-    "SOL": "SOLUSDT",
-    "XRP": "XRPUSDT",
-    "BNB": "BNBUSDT",
-    "ADA": "ADAUSDT",
-    "DOGE": "DOGEUSDT",
-    "AVAX": "AVAXUSDT",
-    "LINK": "LINKUSDT",
-    "LTC": "LTCUSDT",
+    "BTC": "BTC-USD",
+    "ETH": "ETH-USD",
+    "SOL": "SOL-USD",
+    "XRP": "XRP-USD",
+    "BNB": "BNB-USD",
+    "ADA": "ADA-USD",
+    "DOGE": "DOGE-USD",
+    "AVAX": "AVAX-USD",
+    "LINK": "LINK-USD",
+    "LTC": "LTC-USD",
 }
 
 subscribers = set()
 paper_trades = []
-
-offset = 0
-last_auto_report = 0
-last_signal = {}
+last_signals = {}
 
 
-# ============================================================
-# HTTP
-# ============================================================
+# =========================================================
+# GENEL HTTP
+# =========================================================
 
-def get_json(url, params=None):
+def get_json(url, params=None, timeout=15):
     try:
-        response = requests.get(
+        r = requests.get(
             url,
             params=params,
-            timeout=15,
+            timeout=timeout,
             headers={
-                "User-Agent": "CryptoJet/7.1"
+                "User-Agent": "Crypto-Jet/7.2"
             }
         )
 
-        if response.status_code != 200:
-            print(
-                f"API HATA {response.status_code}: "
-                f"{url} | {response.text[:300]}"
-            )
-            return None
-
-        return response.json()
+        r.raise_for_status()
+        return r.json()
 
     except Exception as e:
-        print(f"HTTP HATA: {url} -> {e}")
+        print(f"API HATASI: {url}")
+        print(e)
         return None
 
 
-def f(value, default=0):
-    try:
-        return float(value)
-    except Exception:
-        return default
+# =========================================================
+# TEKNİK İNDİKATÖRLER
+# =========================================================
 
-
-def price_text(price):
-    if price >= 1000:
-        return f"${price:,.2f}"
-    if price >= 1:
-        return f"${price:,.4f}"
-    return f"${price:,.6f}"
-
-
-def money_text(value):
-    value = abs(value)
-
-    if value >= 1_000_000_000:
-        return f"${value / 1_000_000_000:.2f}B"
-
-    if value >= 1_000_000:
-        return f"${value / 1_000_000:.2f}M"
-
-    if value >= 1_000:
-        return f"${value / 1_000:.1f}K"
-
-    return f"${value:,.0f}"
-
-
-# ============================================================
-# EMA
-# ============================================================
-
-def EMA(values, period):
-
+def ema(values, period):
     if len(values) < period:
-        return []
+        return None
 
     multiplier = 2 / (period + 1)
 
-    result = [
-        sum(values[:period]) / period
-    ]
+    result = sum(values[:period]) / period
 
-    for value in values[period:]:
-        result.append(
-            (value - result[-1]) * multiplier
-            + result[-1]
-        )
+    for price in values[period:]:
+        result = (price - result) * multiplier + result
 
     return result
 
 
-# ============================================================
-# RSI
-# ============================================================
-
-def RSI(values, period=14):
-
+def rsi(values, period=14):
     if len(values) < period + 1:
-        return 50
+        return None
 
     gains = []
     losses = []
 
     for i in range(1, len(values)):
-
         change = values[i] - values[i - 1]
 
-        gains.append(max(change, 0))
-        losses.append(max(-change, 0))
+        if change >= 0:
+            gains.append(change)
+            losses.append(0)
+        else:
+            gains.append(0)
+            losses.append(abs(change))
 
     avg_gain = sum(gains[:period]) / period
     avg_loss = sum(losses[:period]) / period
 
     for i in range(period, len(gains)):
-
-        avg_gain = (
-            avg_gain * (period - 1)
-            + gains[i]
-        ) / period
-
-        avg_loss = (
-            avg_loss * (period - 1)
-            + losses[i]
-        ) / period
+        avg_gain = ((avg_gain * (period - 1)) + gains[i]) / period
+        avg_loss = ((avg_loss * (period - 1)) + losses[i]) / period
 
     if avg_loss == 0:
         return 100
@@ -165,729 +110,388 @@ def RSI(values, period=14):
     return 100 - (100 / (1 + rs))
 
 
-# ============================================================
-# MACD
-# ============================================================
+def macd(values):
+    if len(values) < 35:
+        return None, None
 
-def MACD(values):
+    ema12_values = []
+    ema26_values = []
 
-    ema12 = EMA(values, 12)
-    ema26 = EMA(values, 26)
+    for i in range(26, len(values) + 1):
+        e12 = ema(values[:i], 12)
+        e26 = ema(values[:i], 26)
 
-    if not ema12 or not ema26:
-        return 0, 0, 0
+        if e12 is not None and e26 is not None:
+            ema12_values.append(e12)
+            ema26_values.append(e26)
 
-    length = min(
-        len(ema12),
-        len(ema26)
-    )
+    if not ema12_values:
+        return None, None
 
-    ema12 = ema12[-length:]
-    ema26 = ema26[-length:]
+    macd_values = [
+        a - b for a, b in zip(ema12_values, ema26_values)
+    ]
 
-    macd_line = []
+    if len(macd_values) < 9:
+        return macd_values[-1], None
 
-    for a, b in zip(ema12, ema26):
-        macd_line.append(a - b)
+    signal = ema(macd_values, 9)
 
-    if len(macd_line) < 9:
-        return 0, 0, 0
-
-    signal_line = EMA(
-        macd_line,
-        9
-    )
-
-    if not signal_line:
-        return 0, 0, 0
-
-    macd_value = macd_line[-1]
-    signal_value = signal_line[-1]
-
-    histogram = (
-        macd_value - signal_value
-    )
-
-    return (
-        macd_value,
-        signal_value,
-        histogram
-    )
+    return macd_values[-1], signal
 
 
-# ============================================================
-# ATR
-# ============================================================
-
-def ATR(highs, lows, closes, period=14):
-
+def atr(highs, lows, closes, period=14):
     if len(closes) < period + 1:
-        return 0
+        return None
 
-    true_ranges = []
+    trs = []
 
     for i in range(1, len(closes)):
-
         tr = max(
             highs[i] - lows[i],
-            abs(
-                highs[i]
-                - closes[i - 1]
-            ),
-            abs(
-                lows[i]
-                - closes[i - 1]
-            )
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1])
         )
 
-        true_ranges.append(tr)
+        trs.append(tr)
 
-    return sum(
-        true_ranges[-period:]
-    ) / period
+    return sum(trs[-period:]) / period
 
 
-# ============================================================
-# ADX
-# ============================================================
-
-def ADX(highs, lows, closes, period=14):
-
+def adx(highs, lows, closes, period=14):
     if len(closes) < period * 2:
-        return 20, 0, 0
+        return None
 
-    tr_list = []
+    tr_values = []
     plus_dm = []
     minus_dm = []
 
     for i in range(1, len(closes)):
 
-        high_move = (
-            highs[i] - highs[i - 1]
-        )
+        high_diff = highs[i] - highs[i - 1]
+        low_diff = lows[i - 1] - lows[i]
 
-        low_move = (
-            lows[i - 1] - lows[i]
-        )
+        if high_diff > low_diff and high_diff > 0:
+            plus = high_diff
+        else:
+            plus = 0
+
+        if low_diff > high_diff and low_diff > 0:
+            minus = low_diff
+        else:
+            minus = 0
 
         tr = max(
             highs[i] - lows[i],
-            abs(
-                highs[i]
-                - closes[i - 1]
-            ),
-            abs(
-                lows[i]
-                - closes[i - 1]
-            )
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1])
         )
 
-        tr_list.append(tr)
+        tr_values.append(tr)
+        plus_dm.append(plus)
+        minus_dm.append(minus)
 
-        plus_dm.append(
-            high_move
-            if (
-                high_move > low_move
-                and high_move > 0
-            )
-            else 0
-        )
+    if len(tr_values) < period:
+        return None
 
-        minus_dm.append(
-            low_move
-            if (
-                low_move > high_move
-                and low_move > 0
-            )
-            else 0
-        )
+    atr_value = sum(tr_values[-period:]) / period
 
-    tr_sum = sum(
-        tr_list[-period:]
-    )
-
-    if tr_sum == 0:
-        return 20, 0, 0
+    if atr_value == 0:
+        return 0
 
     plus_di = (
-        100
-        * sum(plus_dm[-period:])
-        / tr_sum
-    )
+        sum(plus_dm[-period:]) / period
+    ) / atr_value * 100
 
     minus_di = (
-        100
-        * sum(minus_dm[-period:])
-        / tr_sum
-    )
+        sum(minus_dm[-period:]) / period
+    ) / atr_value * 100
 
-    total = plus_di + minus_di
+    denominator = plus_di + minus_di
 
-    if total == 0:
-        return 20, plus_di, minus_di
+    if denominator == 0:
+        return 0
 
-    dx = (
-        100
-        * abs(plus_di - minus_di)
-        / total
-    )
+    dx = abs(plus_di - minus_di) / denominator * 100
 
-    return dx, plus_di, minus_di
+    return dx
 
 
-# ============================================================
-# BINANCE 1H KLINE
-# ============================================================
+# =========================================================
+# COINBASE KLINE
+# =========================================================
 
 def get_klines(symbol):
 
+    url = f"{COINBASE_API}/products/{symbol}/candles"
+
     data = get_json(
-        f"{BINANCE_API}/fapi/v1/klines",
-        {
-            "symbol": symbol,
-            "interval": TIMEFRAME,
-            "limit": 250
+        url,
+        params={
+            "granularity": 3600
         }
     )
 
     if not data or not isinstance(data, list):
         return None
 
+    # Coinbase:
+    # [time, low, high, open, close, volume]
+
+    data = sorted(data, key=lambda x: x[0])
+
+    data = data[-200:]
+
+    candles = []
+
+    for row in data:
+        if len(row) < 6:
+            continue
+
+        candles.append({
+            "low": float(row[1]),
+            "high": float(row[2]),
+            "open": float(row[3]),
+            "close": float(row[4]),
+            "volume": float(row[5])
+        })
+
+    return candles
+
+
+# =========================================================
+# BINANCE LONG / SHORT
+# =========================================================
+
+def get_long_short(symbol):
+
     try:
 
+        url = (
+            "https://fapi.binance.com/"
+            "futures/data/globalLongShortAccountRatio"
+        )
+
+        data = get_json(
+            url,
+            params={
+                "symbol": symbol,
+                "period": "1h",
+                "limit": 1
+            }
+        )
+
+        if not data:
+            return None
+
+        item = data[-1]
+
+        long_ratio = float(item["longAccount"])
+        short_ratio = float(item["shortAccount"])
+
+        total = long_ratio + short_ratio
+
+        if total <= 0:
+            return None
+
+        long_percent = long_ratio / total * 100
+        short_percent = short_ratio / total * 100
+
         return {
-            "open": [
-                f(x[1])
-                for x in data
-            ],
-
-            "high": [
-                f(x[2])
-                for x in data
-            ],
-
-            "low": [
-                f(x[3])
-                for x in data
-            ],
-
-            "close": [
-                f(x[4])
-                for x in data
-            ],
-
-            "volume": [
-                f(x[5])
-                for x in data
-            ],
+            "long": long_percent,
+            "short": short_percent
         }
 
     except Exception as e:
 
-        print(
-            f"KLINE PARSE HATASI "
-            f"{symbol}: {e}"
-        )
+        print(f"Long/Short alınamadı: {symbol}")
+        print(e)
 
         return None
 
 
-# ============================================================
-# LONG / SHORT
-# ============================================================
-
-def get_long_short(symbol):
-
-    data = get_json(
-        f"{BINANCE_API}/futures/data/globalLongShortAccountRatio",
-        {
-            "symbol": symbol,
-            "period": "1h",
-            "limit": 1
-        }
-    )
-
-    if not data or not isinstance(data, list):
-
-        print(
-            f"{symbol}: Long/Short verisi yok"
-        )
-
-        return None, None
-
-    row = data[-1]
-
-    ratio = f(
-        row.get(
-            "longShortRatio"
-        ),
-        0
-    )
-
-    if ratio <= 0:
-        return None, None
-
-    long_pct = (
-        ratio
-        / (1 + ratio)
-        * 100
-    )
-
-    short_pct = (
-        100 - long_pct
-    )
-
-    return (
-        long_pct,
-        short_pct
-    )
-
-
-# ============================================================
-# OPEN INTEREST
-# ============================================================
-
-def get_open_interest(symbol):
-
-    data = get_json(
-        f"{BINANCE_API}/fapi/v1/openInterest",
-        {
-            "symbol": symbol
-        }
-    )
-
-    if not data:
-        return 0
-
-    return f(
-        data.get(
-            "openInterest"
-        )
-    )
-
-
-# ============================================================
-# COIN ANALİZİ
-# ============================================================
+# =========================================================
+# ANALİZ
+# =========================================================
 
 def analyze_coin(name, symbol):
 
     candles = get_klines(symbol)
 
-    if not candles:
-
-        print(
-            f"{name}: Kline alınamadı"
-        )
-
+    if not candles or len(candles) < 60:
+        print(f"{name}: Yeterli veri yok.")
         return None
 
-    closes = candles["close"]
-    highs = candles["high"]
-    lows = candles["low"]
-    volumes = candles["volume"]
+    closes = [x["close"] for x in candles]
+    highs = [x["high"] for x in candles]
+    lows = [x["low"] for x in candles]
+    volumes = [x["volume"] for x in candles]
 
-    if len(closes) < 200:
+    price = closes[-1]
 
-        print(
-            f"{name}: Yeterli mum yok"
-        )
+    ema20 = ema(closes, 20)
+    ema50 = ema(closes, 50)
+    ema200 = ema(closes, 200)
 
-        return None
+    rsi_value = rsi(closes)
 
-    current_price = closes[-1]
+    macd_value, macd_signal = macd(closes)
 
-    # --------------------------------------------------------
-    # İNDİKATÖRLER
-    # --------------------------------------------------------
-
-    ema20 = EMA(
-        closes,
-        20
-    )[-1]
-
-    ema50 = EMA(
-        closes,
-        50
-    )[-1]
-
-    ema200 = EMA(
-        closes,
-        200
-    )[-1]
-
-    rsi = RSI(
-        closes,
-        14
-    )
-
-    macd_value, macd_signal, macd_hist = MACD(
-        closes
-    )
-
-    atr = ATR(
+    atr_value = atr(
         highs,
         lows,
         closes
     )
 
-    adx, plus_di, minus_di = ADX(
+    adx_value = adx(
         highs,
         lows,
         closes
     )
 
-    # --------------------------------------------------------
-    # HACİM
-    # --------------------------------------------------------
-
-    avg_volume = (
-        sum(volumes[-20:])
-        / 20
-    )
+    average_volume = sum(volumes[-20:]) / 20
 
     current_volume = volumes[-1]
 
-    if avg_volume > 0:
-        volume_ratio = (
-            current_volume
-            / avg_volume
-        )
-    else:
-        volume_ratio = 1
-
-    # --------------------------------------------------------
-    # MOMENTUM
-    # --------------------------------------------------------
+    volume_ratio = (
+        current_volume / average_volume
+        if average_volume > 0
+        else 1
+    )
 
     momentum = (
-        (
-            current_price
-            - closes[-5]
-        )
-        / closes[-5]
-        * 100
+        (price - closes[-10]) /
+        closes[-10] *
+        100
     )
-
-    # --------------------------------------------------------
-    # DESTEK / DİRENÇ
-    # --------------------------------------------------------
-
-    support = min(
-        lows[-20:]
-    )
-
-    resistance = max(
-        highs[-20:]
-    )
-
-    # --------------------------------------------------------
-    # FUTURES
-    # --------------------------------------------------------
-
-    long_pct, short_pct = get_long_short(
-        symbol
-    )
-
-    open_interest = get_open_interest(
-        symbol
-    )
-
-    if (
-        long_pct is not None
-        and short_pct is not None
-    ):
-
-        oi_value = (
-            open_interest
-            * current_price
-        )
-
-        estimated_long = (
-            oi_value
-            * long_pct
-            / 100
-        )
-
-        estimated_short = (
-            oi_value
-            * short_pct
-            / 100
-        )
-
-        long_short_text = True
-
-    else:
-
-        estimated_long = 0
-        estimated_short = 0
-        long_short_text = False
-
-    # --------------------------------------------------------
-    # SCORE
-    # --------------------------------------------------------
 
     score = 0
 
-    # EMA TREND
-    if ema20 > ema50 > ema200:
+    # EMA
+    if ema20 and ema50 and ema200:
 
-        score += 2
-        ema_icon = "🟢"
+        if price > ema20:
+            score += 1
+        else:
+            score -= 1
 
-    elif ema20 < ema50 < ema200:
+        if ema20 > ema50:
+            score += 1
+        else:
+            score -= 1
 
-        score -= 2
-        ema_icon = "🔴"
-
-    else:
-
-        ema_icon = "⚪"
-
-    # EMA200
-    if current_price > ema200:
-        score += 1
-
-    elif current_price < ema200:
-        score -= 1
+        if price > ema200:
+            score += 1
+        else:
+            score -= 1
 
     # RSI
-    if 55 <= rsi <= 68:
+    if rsi_value is not None:
 
-        score += 1
-        rsi_icon = "🟢"
+        if 52 <= rsi_value <= 70:
+            score += 1
 
-    elif 32 <= rsi <= 45:
+        elif 30 <= rsi_value < 45:
+            score -= 1
 
-        score -= 1
-        rsi_icon = "🔴"
+        elif rsi_value > 75:
+            score -= 1
 
-    else:
-
-        rsi_icon = "⚪"
+        elif rsi_value < 25:
+            score += 1
 
     # MACD
-    if macd_hist > 0:
+    if macd_value is not None and macd_signal is not None:
 
-        score += 1
-        macd_icon = "🟢"
-
-    elif macd_hist < 0:
-
-        score -= 1
-        macd_icon = "🔴"
-
-    else:
-
-        macd_icon = "⚪"
+        if macd_value > macd_signal:
+            score += 1
+        else:
+            score -= 1
 
     # ADX
-    if adx >= 25:
+    if adx_value is not None:
 
-        if plus_di > minus_di:
+        if adx_value >= 25:
 
-            score += 2
-            adx_icon = "🟢"
+            if ema20 and ema50:
 
-        elif minus_di > plus_di:
+                if ema20 > ema50:
+                    score += 2
+                else:
+                    score -= 2
 
-            score -= 2
-            adx_icon = "🔴"
+    # Momentum
+    if momentum > 1:
+        score += 1
 
-        else:
+    elif momentum < -1:
+        score -= 1
 
-            adx_icon = "⚪"
-
-    else:
-
-        adx_icon = "⚪"
-
-    # HACİM
-    if volume_ratio >= 1.20:
+    # Volume
+    if volume_ratio >= 1.3:
 
         if momentum > 0:
-
             score += 1
-            volume_icon = "🟢"
 
         elif momentum < 0:
-
             score -= 1
-            volume_icon = "🔴"
 
-        else:
+    # Long / Short
+    futures_symbol = symbol.replace("-", "")
 
-            volume_icon = "⚪"
+    long_short = get_long_short(futures_symbol)
 
-    else:
+    if long_short:
 
-        volume_icon = "⚪"
-
-    # MOMENTUM
-    if momentum > 0.50:
-
-        score += 1
-
-    elif momentum < -0.50:
-
-        score -= 1
-
-    # LONG / SHORT
-    if long_pct is not None:
-
-        if long_pct >= 57:
-
+        if long_short["long"] >= 58:
             score += 1
 
-        elif short_pct >= 57:
-
+        elif long_short["short"] >= 58:
             score -= 1
 
-    # --------------------------------------------------------
-    # DESTEK / DİRENÇ FİLTRESİ
-    # --------------------------------------------------------
-
-    near_resistance = (
-        (
-            resistance
-            - current_price
-        )
-        / current_price
-        < 0.008
-    )
-
-    near_support = (
-        (
-            current_price
-            - support
-        )
-        / current_price
-        < 0.008
-    )
-
-    if near_resistance and score > 0:
-        score -= 1
-
-    if near_support and score < 0:
-        score += 1
-
-    # --------------------------------------------------------
-    # SİNYAL
-    # --------------------------------------------------------
-
+    # Direction
     if score >= 7:
-
-        direction = "LONG"
         signal = "🟢 GÜÇLÜ AL"
+        direction = "LONG"
 
     elif score <= -7:
-
-        direction = "SHORT"
         signal = "🔴 GÜÇLÜ SAT"
+        direction = "SHORT"
 
     else:
-
-        direction = "WAIT"
         signal = "⏸️ BEKLE"
+        direction = "WAIT"
 
     strength = min(
         95,
         50 + abs(score) * 5
     )
 
-    # --------------------------------------------------------
-    # PAPER TRADE
-    # --------------------------------------------------------
-
-    if atr <= 0:
-        atr = current_price * 0.01
-
-    if direction == "LONG":
-
-        stop = (
-            current_price
-            - atr * 1.2
-        )
-
-        target = (
-            current_price
-            + atr * 2
-        )
-
-    elif direction == "SHORT":
-
-        stop = (
-            current_price
-            + atr * 1.2
-        )
-
-        target = (
-            current_price
-            - atr * 2
-        )
-
-    else:
-
-        stop = 0
-        target = 0
-
     return {
-
         "name": name,
         "symbol": symbol,
-
-        "price": current_price,
-
+        "price": price,
         "ema20": ema20,
         "ema50": ema50,
         "ema200": ema200,
-
-        "rsi": rsi,
-
-        "macd_hist": macd_hist,
-
-        "adx": adx,
-        "plus_di": plus_di,
-        "minus_di": minus_di,
-
-        "atr": atr,
-
+        "rsi": rsi_value,
+        "macd": macd_value,
+        "macd_signal": macd_signal,
+        "adx": adx_value,
+        "atr": atr_value,
         "volume_ratio": volume_ratio,
-
         "momentum": momentum,
-
-        "support": support,
-        "resistance": resistance,
-
-        "long_pct": long_pct,
-        "short_pct": short_pct,
-
-        "open_interest": open_interest,
-
-        "estimated_long": estimated_long,
-        "estimated_short": estimated_short,
-
-        "long_short_available": long_short_text,
-
+        "long_short": long_short,
         "score": score,
-        "direction": direction,
         "signal": signal,
-        "strength": strength,
-
-        "stop": stop,
-        "target": target,
-
-        "ema_icon": ema_icon,
-        "rsi_icon": rsi_icon,
-        "macd_icon": macd_icon,
-        "adx_icon": adx_icon,
-        "volume_icon": volume_icon,
+        "direction": direction,
+        "strength": strength
     }
 
 
-# ============================================================
+# =========================================================
 # TÜM COİNLER
-# ============================================================
+# =========================================================
 
 def analyze_all():
 
@@ -907,243 +511,148 @@ def analyze_all():
 
         except Exception as e:
 
-            print(
-                f"{name} ANALİZ HATASI: {e}"
-            )
-
-    print(
-        f"Toplam başarılı analiz: "
-        f"{len(results)}/{len(COINS)}"
-    )
+            print(f"{name} ANALİZ HATASI:")
+            print(e)
 
     return results
 
 
-# ============================================================
-# PAPER TRADE
-# ============================================================
+# =========================================================
+# PAPER TRADING
+# =========================================================
 
 def open_trade(result):
 
-    if result["direction"] not in (
-        "LONG",
-        "SHORT"
-    ):
+    if result["direction"] not in ["LONG", "SHORT"]:
         return
+
+    symbol = result["symbol"]
 
     for trade in paper_trades:
 
         if (
-            trade["symbol"]
-            == result["symbol"]
-            and trade["status"]
-            == "OPEN"
+            trade["symbol"] == symbol
+            and trade["status"] == "OPEN"
         ):
             return
 
-    paper_trades.append({
+    price = result["price"]
+    atr_value = result["atr"]
 
-        "symbol": result["symbol"],
+    if not atr_value or atr_value <= 0:
+        return
+
+    if result["direction"] == "LONG":
+
+        stop_loss = price - atr_value * 1.2
+        take_profit = price + atr_value * 2
+
+    else:
+
+        stop_loss = price + atr_value * 1.2
+        take_profit = price - atr_value * 2
+
+    trade = {
+        "symbol": symbol,
         "name": result["name"],
-
-        "direction":
-            result["direction"],
-
-        "entry":
-            result["price"],
-
-        "stop":
-            result["stop"],
-
-        "target":
-            result["target"],
-
+        "direction": result["direction"],
+        "entry": price,
+        "stop": stop_loss,
+        "target": take_profit,
         "status": "OPEN",
-
-        "opened":
-            datetime.now(
-                timezone.utc
-            ).isoformat(),
-
-        "exit": 0,
+        "opened": datetime.utcnow().strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+        "closed": None,
+        "exit": None,
         "pnl": 0
-    })
+    }
+
+    paper_trades.append(trade)
+
+    print(
+        f"PAPER TRADE AÇILDI: "
+        f"{result['name']} {result['direction']} "
+        f"{price}"
+    )
 
 
 def update_trades(results):
-
-    prices = {
-        r["symbol"]: r["price"]
-        for r in results
-    }
 
     for trade in paper_trades:
 
         if trade["status"] != "OPEN":
             continue
 
-        symbol = trade["symbol"]
+        result = next(
+            (
+                r for r in results
+                if r["symbol"] == trade["symbol"]
+            ),
+            None
+        )
 
-        if symbol not in prices:
+        if not result:
             continue
 
-        price = prices[symbol]
+        price = result["price"]
 
-        # LONG
+        closed = False
+
         if trade["direction"] == "LONG":
 
             if price <= trade["stop"]:
-
-                trade["status"] = "LOSS"
                 trade["exit"] = price
-
                 trade["pnl"] = (
-                    (
-                        price
-                        - trade["entry"]
-                    )
-                    / trade["entry"]
-                    * 100
-                )
+                    price - trade["entry"]
+                ) / trade["entry"] * 100
+
+                closed = True
 
             elif price >= trade["target"]:
-
-                trade["status"] = "WIN"
                 trade["exit"] = price
-
                 trade["pnl"] = (
-                    (
-                        price
-                        - trade["entry"]
-                    )
-                    / trade["entry"]
-                    * 100
-                )
+                    price - trade["entry"]
+                ) / trade["entry"] * 100
 
-        # SHORT
-        elif trade["direction"] == "SHORT":
+                closed = True
+
+        else:
 
             if price >= trade["stop"]:
-
-                trade["status"] = "LOSS"
                 trade["exit"] = price
-
                 trade["pnl"] = (
-                    (
-                        trade["entry"]
-                        - price
-                    )
-                    / trade["entry"]
-                    * 100
-                )
+                    trade["entry"] - price
+                ) / trade["entry"] * 100
+
+                closed = True
 
             elif price <= trade["target"]:
-
-                trade["status"] = "WIN"
                 trade["exit"] = price
-
                 trade["pnl"] = (
-                    (
-                        trade["entry"]
-                        - price
-                    )
-                    / trade["entry"]
-                    * 100
-                )
+                    trade["entry"] - price
+                ) / trade["entry"] * 100
+
+                closed = True
+
+        if closed:
+
+            trade["status"] = "CLOSED"
+
+            trade["closed"] = datetime.utcnow().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+
+            print(
+                f"PAPER TRADE KAPANDI: "
+                f"{trade['name']} "
+                f"{trade['pnl']:.2f}%"
+            )
 
 
-# ============================================================
-# COIN FORMAT
-# ============================================================
-
-def format_coin(r):
-
-    if r["long_pct"] is not None:
-
-        long_text = (
-            f"%{r['long_pct']:.1f}"
-        )
-
-        short_text = (
-            f"%{r['short_pct']:.1f}"
-        )
-
-        long_value = money_text(
-            r["estimated_long"]
-        )
-
-        short_value = money_text(
-            r["estimated_short"]
-        )
-
-    else:
-
-        long_text = "N/A"
-        short_text = "N/A"
-        long_value = "N/A"
-        short_value = "N/A"
-
-    return (
-        f"🪙 {r['name']}\n"
-        f"💰 Fiyat: "
-        f"{price_text(r['price'])}\n"
-        f"🟢 Long: {long_text}\n"
-        f"🔴 Short: {short_text}\n"
-        f"⚖️ L/S: "
-        f"{long_text} / {short_text}\n"
-        f"💵 Tahmini Long: {long_value}\n"
-        f"💵 Tahmini Short: {short_value}\n"
-        f"📊 EMA {r['ema_icon']} | "
-        f"RSI {r['rsi_icon']} | "
-        f"MACD {r['macd_icon']} | "
-        f"ADX {r['adx_icon']} | "
-        f"Hacim {r['volume_icon']}\n"
-        f"📈 RSI: {r['rsi']:.1f} | "
-        f"ADX: {r['adx']:.1f}\n"
-        f"⚡ Momentum: "
-        f"{r['momentum']:+.2f}%\n"
-        f"🎯 {r['signal']}\n"
-        f"💪 Güç: "
-        f"%{r['strength']:.0f}\n"
-        f"🧠 Skor: "
-        f"{r['score']:+d}"
-    )
-
-
-# ============================================================
-# RAPOR
-# ============================================================
-
-def create_report(results):
-
-    now = datetime.now().strftime(
-        "%d.%m.%Y %H:%M"
-    )
-
-    text = (
-        "🚀 CRYPTO JET V7.1\n"
-        "━━━━━━━━━━━━━━━━\n"
-        "⏱ Zaman dilimi: 1 Saat\n"
-        "🔄 Tarama: 10 Dakika\n"
-        f"🕐 {now}\n"
-        "🧪 Paper Trade: AKTİF\n"
-        "━━━━━━━━━━━━━━━━\n\n"
-    )
-
-    for result in results:
-
-        text += (
-            format_coin(result)
-            + "\n"
-            + "━━━━━━━━━━━━━━━━\n"
-        )
-
-    return text
-
-
-# ============================================================
-# TELEGRAM
-# ============================================================
+# =========================================================
+# TELEGRAM MESAJI
+# =========================================================
 
 def send_message(chat_id, text):
 
@@ -1160,455 +669,377 @@ def send_message(chat_id, text):
 
     except Exception as e:
 
-        print(
-            f"Telegram HATASI: {e}"
-        )
+        print("Telegram mesaj hatası:")
+        print(e)
 
 
-# ============================================================
+def format_coin(result):
+
+    ls = result["long_short"]
+
+    if ls:
+
+        long_text = f"{ls['long']:.0f}%"
+        short_text = f"{ls['short']:.0f}%"
+
+    else:
+
+        long_text = "N/A"
+        short_text = "N/A"
+
+    ema_status = "🟢" if (
+        result["ema20"]
+        and result["ema50"]
+        and result["price"] > result["ema20"]
+        and result["ema20"] > result["ema50"]
+    ) else "🔴"
+
+    rsi_status = "🟢" if (
+        result["rsi"] is not None
+        and 50 <= result["rsi"] <= 70
+    ) else "🔴"
+
+    macd_status = "🟢" if (
+        result["macd"] is not None
+        and result["macd_signal"] is not None
+        and result["macd"] > result["macd_signal"]
+    ) else "🔴"
+
+    adx_status = "🟢" if (
+        result["adx"] is not None
+        and result["adx"] >= 25
+    ) else "🟡"
+
+    volume_status = "🟢" if (
+        result["volume_ratio"] >= 1.2
+    ) else "🟡"
+
+    return (
+        f"━━━━━━━━━━━━━━━━\n"
+        f"🪙 {result['name']}\n\n"
+        f"💰 Fiyat: ${result['price']:,.2f}\n\n"
+        f"⚖️ Long / Short: "
+        f"{long_text} / {short_text}\n\n"
+        f"📊 EMA: {ema_status}\n"
+        f"📊 RSI: {rsi_status}\n"
+        f"📊 MACD: {macd_status}\n"
+        f"📊 ADX: {adx_status}\n"
+        f"📊 Hacim: {volume_status}\n"
+        f"📈 Momentum: {result['momentum']:+.2f}%\n\n"
+        f"🎯 SİNYAL: {result['signal']}\n"
+        f"💪 Güç: %{result['strength']}\n"
+    )
+
+
+def create_report(results):
+
+    if not results:
+        return "❌ Veri alınamadı."
+
+    text = (
+        "🚀 CRYPTO JET V7.2\n"
+        "━━━━━━━━━━━━━━━━\n"
+        "⏱ Zaman dilimi: 1 Saat\n"
+        "🔄 Tarama: 10 dakika\n"
+        "🧪 Paper Trading\n\n"
+    )
+
+    for result in results:
+        text += format_coin(result)
+        text += "\n"
+
+    return text
+
+
+# =========================================================
 # PERFORMANS
-# ============================================================
+# =========================================================
 
 def performance():
 
     closed = [
-        t
-        for t in paper_trades
-        if t["status"]
-        in ("WIN", "LOSS")
+        x for x in paper_trades
+        if x["status"] == "CLOSED"
     ]
 
-    wins = sum(
-        1
-        for t in closed
-        if t["status"] == "WIN"
-    )
+    open_count = len([
+        x for x in paper_trades
+        if x["status"] == "OPEN"
+    ])
 
-    losses = sum(
-        1
-        for t in closed
-        if t["status"] == "LOSS"
-    )
+    wins = len([
+        x for x in closed
+        if x["pnl"] > 0
+    ])
+
+    losses = len([
+        x for x in closed
+        if x["pnl"] <= 0
+    ])
 
     total_pnl = sum(
-        t["pnl"]
-        for t in closed
+        x["pnl"] for x in closed
     )
 
     if closed:
-
-        win_rate = (
-            wins
-            / len(closed)
-            * 100
-        )
-
+        win_rate = wins / len(closed) * 100
     else:
-
         win_rate = 0
 
-    open_count = sum(
-        1
-        for t in paper_trades
-        if t["status"] == "OPEN"
-    )
-
     return (
-        "📊 CRYPTO JET V7.1\n"
+        "📊 CRYPTO JET PERFORMANS\n"
         "━━━━━━━━━━━━━━━━\n\n"
-        "🧪 PAPER TEST\n\n"
-        f"📌 Kapanan: {len(closed)}\n"
+        f"📁 Kapanan işlem: {len(closed)}\n"
         f"🟢 Kazanç: {wins}\n"
-        f"🔴 Kayıp: {losses}\n"
-        f"📈 Başarı: %{win_rate:.1f}\n"
-        f"💰 Paper P/L: %{total_pnl:.2f}\n"
-        f"🔵 Açık: {open_count}"
+        f"🔴 Zarar: {losses}\n"
+        f"🎯 Başarı oranı: %{win_rate:.1f}\n"
+        f"💰 Toplam P/L: {total_pnl:+.2f}%\n"
+        f"🔵 Açık işlem: {open_count}\n"
     )
 
 
-# ============================================================
-# GÜÇLÜ SİNYAL
-# ============================================================
+# =========================================================
+# YENİ GÜÇLÜ SİNYAL KONTROLÜ
+# =========================================================
 
 def check_new_signals(results):
 
-    alerts = []
+    for result in results:
 
-    for r in results:
+        symbol = result["symbol"]
 
-        direction = r["direction"]
+        old_signal = last_signals.get(symbol)
 
-        if direction not in (
-            "LONG",
-            "SHORT"
-        ):
-            continue
+        new_signal = result["direction"]
 
-        old = last_signal.get(
-            r["symbol"]
-        )
+        last_signals[symbol] = new_signal
 
-        if old != direction:
+        if new_signal in ["LONG", "SHORT"]:
 
-            last_signal[
-                r["symbol"]
-            ] = direction
+            if old_signal != new_signal:
 
-            alerts.append(r)
-
-            open_trade(r)
-
-    return alerts
+                open_trade(result)
 
 
-# ============================================================
-# OTOMATİK RAPOR
-# ============================================================
+# =========================================================
+# RAPOR
+# =========================================================
 
-def send_report(results):
+def send_report():
 
-    report = create_report(
-        results
-    )
+    results = analyze_all()
 
-    for chat_id in list(
-        subscribers
-    ):
+    if not results:
+
+        for chat_id in subscribers:
+            send_message(
+                chat_id,
+                "❌ Veri alınamadı.\n\n"
+                "Coinbase piyasa verisi alınamadı."
+            )
+
+        return
+
+    update_trades(results)
+
+    check_new_signals(results)
+
+    report = create_report(results)
+
+    for chat_id in list(subscribers):
 
         send_message(
             chat_id,
             report
         )
 
-    alerts = check_new_signals(
-        results
-    )
 
-    for r in alerts:
+# =========================================================
+# TELEGRAM KOMUTLARI
+# =========================================================
 
-        alert = (
-            "🚨 YENİ GÜÇLÜ SİNYAL\n"
-            "━━━━━━━━━━━━━━━━\n"
-            f"🪙 {r['name']}\n"
-            f"🎯 {r['signal']}\n"
-            f"💪 Güç: "
-            f"%{r['strength']:.0f}\n"
-            f"💰 Giriş: "
-            f"{price_text(r['price'])}\n"
-            f"🛑 Paper SL: "
-            f"{price_text(r['stop'])}\n"
-            f"🎯 Paper TP: "
-            f"{price_text(r['target'])}\n"
-            f"📊 RSI: "
-            f"{r['rsi']:.1f}\n"
-            f"📊 ADX: "
-            f"{r['adx']:.1f}\n"
-        )
+def handle_command(chat_id, text):
 
-        if r["long_pct"] is not None:
+    text = text.strip().lower()
 
-            alert += (
-                f"⚖️ Long/Short: "
-                f"%{r['long_pct']:.1f} / "
-                f"%{r['short_pct']:.1f}\n"
-            )
+    if text == "/start":
 
-        alert += (
-            "\n🧪 Gerçek işlem yok.\n"
-            "Paper Trade olarak takip ediliyor."
-        )
-
-        for chat_id in list(
-            subscribers
-        ):
-
-            send_message(
-                chat_id,
-                alert
-            )
-
-
-# ============================================================
-# KOMUTLAR
-# ============================================================
-
-def handle_command(
-    chat_id,
-    text
-):
-
-    command = (
-        text.strip()
-        .lower()
-        .split()[0]
-    )
-
-    # START
-    if command == "/start":
-
-        subscribers.add(
-            chat_id
-        )
+        subscribers.add(chat_id)
 
         send_message(
             chat_id,
-            "🚀 CRYPTO JET V7.1 AKTİF!\n\n"
+            "🚀 CRYPTO JET V7.2 AKTİF!\n\n"
+            "10 coin taranıyor.\n"
             "⏱ 1 saatlik analiz\n"
-            "🔄 10 dakikada otomatik tarama\n"
-            "🧠 Güçlü sinyal sistemi\n"
-            "🧪 Paper Trade aktif\n\n"
-            "İlk piyasa taraması yapılıyor..."
+            "🔄 10 dakikada bir güncelleme\n"
+            "🧪 Paper Trading aktif\n\n"
+            "İlk rapor hazırlanıyor..."
         )
 
-        results = analyze_all()
+        send_report()
 
-        if results:
-
-            update_trades(
-                results
-            )
-
-            send_report(
-                results
-            )
-
-        else:
-
-            send_message(
-                chat_id,
-                "❌ Veri alınamadı.\n\n"
-                "GitHub Actions logunda "
-                "hangi Binance API isteğinin "
-                "hata verdiğini görebilirsin."
-            )
-
-    # STOP
-    elif command == "/stop":
-
-        subscribers.discard(
-            chat_id
-        )
-
-        send_message(
-            chat_id,
-            "🛑 Otomatik bildirimler durduruldu."
-        )
-
-    # BTC
-    elif command == "/btc":
+    elif text == "/btc":
 
         result = analyze_coin(
             "BTC",
-            "BTCUSDT"
+            "BTC-USD"
         )
 
         if result:
-
             send_message(
                 chat_id,
-                "🚀 CRYPTO JET V7.1\n"
-                "━━━━━━━━━━━━━━━━\n"
+                "🚀 CRYPTO JET BTC\n\n"
                 + format_coin(result)
             )
-
         else:
-
             send_message(
                 chat_id,
                 "❌ BTC verisi alınamadı."
             )
 
-    # COINLER
-    elif command == "/coinler":
+    elif text == "/coinler":
 
-        results = analyze_all()
-
-        if not results:
-
-            send_message(
-                chat_id,
-                "❌ Coin verileri alınamadı."
-            )
-
-            return
-
-        text = (
-            "🪙 CRYPTO JET V7.1\n"
+        text_out = (
+            "🪙 TARANAN COİNLER\n"
             "━━━━━━━━━━━━━━━━\n\n"
         )
 
-        for r in results:
-
-            text += (
-                f"{r['name']}: "
-                f"{r['signal']} "
-                f"%{r['strength']:.0f}\n"
-            )
+        for coin in COINS:
+            text_out += f"• {coin}\n"
 
         send_message(
             chat_id,
-            text
+            text_out
         )
 
-    # DURUM
-    elif command == "/durum":
+    elif text == "/durum":
 
         send_message(
             chat_id,
-            "🟢 CRYPTO JET V7.1 ÇALIŞIYOR\n\n"
-            f"👥 Abone: "
-            f"{len(subscribers)}\n"
-            f"🧪 Paper işlemler: "
-            f"{len(paper_trades)}\n"
-            "⏱ Analiz: 1 Saat\n"
-            "🔄 Tarama: 10 Dakika"
+            "🚀 Crypto Jet V7.2 aktif.\n\n"
+            f"👥 Abone: {len(subscribers)}\n"
+            f"🧪 Paper işlem: {len(paper_trades)}\n"
+            "🔄 Tarama: 10 dakika"
         )
 
-    # PERFORMANS
-    elif command == "/performans":
+    elif text == "/performans":
 
         send_message(
             chat_id,
             performance()
         )
 
-    # HELP
-    elif command == "/help":
+    elif text == "/stop":
+
+        subscribers.discard(chat_id)
 
         send_message(
             chat_id,
-            "🚀 CRYPTO JET V7.1\n\n"
-            "/start - Başlat\n"
-            "/stop - Bildirimleri durdur\n"
+            "🛑 Otomatik bildirim durduruldu."
+        )
+
+    elif text == "/help":
+
+        send_message(
+            chat_id,
+            "🤖 CRYPTO JET V7.2\n\n"
+            "/start - Botu başlat\n"
             "/btc - BTC analizi\n"
-            "/coinler - Coin özeti\n"
+            "/coinler - Coin listesi\n"
             "/durum - Bot durumu\n"
-            "/performans - Paper sonuçları\n"
+            "/performans - Paper trading sonucu\n"
+            "/stop - Bildirimleri durdur\n"
             "/help - Yardım"
         )
 
 
-# ============================================================
+# =========================================================
 # TELEGRAM UPDATES
-# ============================================================
+# =========================================================
 
-def get_updates():
+def get_updates(offset):
 
-    global offset
+    try:
 
-    data = get_json(
-        f"{TELEGRAM_API}/getUpdates",
-        {
-            "offset": offset,
-            "timeout": 10
-        }
-    )
+        r = requests.get(
+            f"{TELEGRAM_API}/getUpdates",
+            params={
+                "offset": offset,
+                "timeout": 30
+            },
+            timeout=35
+        )
 
-    if not data:
+        r.raise_for_status()
 
-        return []
+        return r.json()
 
-    return data.get(
-        "result",
-        []
-    )
+    except Exception as e:
+
+        print("Telegram getUpdates hatası:")
+        print(e)
+
+        return None
 
 
-# ============================================================
-# 🚀 ANA MOTOR
-# ============================================================
+# =========================================================
+# ANA DÖNGÜ
+# =========================================================
 
-print(
-    "🚀 CRYPTO JET V7.1 BAŞLADI!"
-)
+print("🚀 CRYPTO JET V7.2 BAŞLADI")
+
+offset = 0
+last_auto_scan = 0
 
 while True:
 
     try:
 
-        # Telegram mesajları
-        updates = get_updates()
+        data = get_updates(offset)
 
-        for update in updates:
+        if data and data.get("ok"):
 
-            offset = (
-                update["update_id"]
-                + 1
-            )
+            for update in data.get("result", []):
 
-            message = update.get(
-                "message"
-            )
+                offset = update["update_id"] + 1
 
-            if not message:
-                continue
+                message = update.get("message")
 
-            chat_id = message["chat"]["id"]
+                if not message:
+                    continue
 
-            text = message.get(
-                "text",
-                ""
-            )
+                chat_id = message["chat"]["id"]
 
-            if text.startswith("/"):
+                text = message.get("text", "")
 
-                handle_command(
-                    chat_id,
-                    text
-                )
+                if text:
+                    handle_command(
+                        chat_id,
+                        text
+                    )
 
-        # Otomatik tarama
-        now = time.time()
+        # =================================================
+        # OTOMATİK 10 DAKİKALIK TARAMA
+        # =================================================
+
+        current_time = time.time()
 
         if (
             subscribers
-            and
-            now - last_auto_report
-            >= AUTO_INTERVAL
+            and current_time - last_auto_scan >= AUTO_INTERVAL
         ):
 
-            print(
-                "🔎 10 dakikalık tarama başladı..."
-            )
+            print("🔄 Otomatik piyasa taraması...")
 
-            results = analyze_all()
+            send_report()
 
-            if results:
-
-                update_trades(
-                    results
-                )
-
-                send_report(
-                    results
-                )
-
-                print(
-                    "✅ Rapor gönderildi."
-                )
-
-            else:
-
-                print(
-                    "❌ Hiçbir coin analiz edilemedi."
-                )
-
-            last_auto_report = now
+            last_auto_scan = current_time
 
         time.sleep(1)
 
-    except KeyboardInterrupt:
-
-        print(
-            "🛑 Bot kapatıldı."
-        )
-
-        break
-
     except Exception as e:
 
-        print(
-            f"ANA MOTOR HATASI: {e}"
-        )
+        print("ANA DÖNGÜ HATASI:")
+        print(e)
 
         time.sleep(5)
