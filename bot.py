@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 CRYPTO JET V13 — HİBRİT EARLY MOVE
-Temiz, stabil ve geliştirilmiş versiyon
+Versiyon: 13.6
 """
 
 import os
@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 # =========================================================
 # AYARLAR
 # =========================================================
+
+VERSION = "13.6"
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
@@ -596,7 +598,7 @@ def build_report(r: Result) -> str:
     )
 
     text = f"""
-🚀 CRYPTO JET V13 — HİBRİT EARLY MOVE
+🚀 CRYPTO JET V{VERSION} — HİBRİT EARLY MOVE
 ━━━━━━━━━━━━━━━━━━━━━━━━
 
 🪙 {r.product['base']}
@@ -693,7 +695,7 @@ def market_scan(chat_id: Optional[int] = None, send_alerts: bool = False) -> Lis
     # Özet
     if chat_id:
         summary = (
-            f"🚀 CRYPTO JET V13\n"
+            f"🚀 CRYPTO JET V{VERSION}\n"
             f"━━━━━━━━━━━━━━━━\n\n"
             f"Analiz edilen : {len(results)} coin\n"
             f"Sinyal bulunan: {len(strong)}\n\n"
@@ -722,8 +724,8 @@ def handle_command(chat_id: int, text: str):
     if text == "/start":
         send_message(
             chat_id,
-            """
-🚀 CRYPTO JET V13 — HİBRİT EARLY MOVE
+            f"""
+🚀 CRYPTO JET V{VERSION} — HİBRİT EARLY MOVE
 
 Komutlar:
 /jet     → Otomatik sistemi başlat
@@ -734,7 +736,7 @@ Komutlar:
 
 Seviyeler:
 👀 WATCH   → Sıkışma / hazırlık
-🟢 ALARM   → İlk kıpırdanma (%0.6-1.3)
+🟢 ALARM   → İlk kıpırdanma
 🔥 STRONG
 🚀 ELITE
 💥 EXTREME
@@ -779,7 +781,7 @@ Dom Bias   : {m['dom_bias']}
         send_message(
             chat_id,
             f"""
-🚀 CRYPTO JET V13 DURUM
+🚀 CRYPTO JET V{VERSION} DURUM
 ━━━━━━━━━━━━━━━━
 Durum          : {status}
 Coin sayısı    : {len(get_products())}
@@ -824,7 +826,7 @@ def automatic_scan():
 # =========================================================
 
 def main():
-    print("🚀 CRYPTO JET V13 — HİBRİT EARLY MOVE başlatıldı")
+    print(f"🚀 CRYPTO JET V{VERSION} — HİBRİT EARLY MOVE başlatıldı")
     print("Telegram polling bekleniyor...")
 
     offset = 0
