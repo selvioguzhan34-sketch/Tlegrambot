@@ -1,1590 +1,463 @@
 #!/usr/bin/env python3
 """
-CRYPTO JET V17
-15m erken hareket + 1H/4H/1D onay + pozisyon + görsel Telegram
+SCALP JET — video kuralı (sinyal + kâğıt pozisyon)
 
-Bu bir radar / sinyal botudur. Emir açmaz, kâr garanti etmez.
+Kaynak short: anlık tarama, yükselişte AL,
+10-15 dk içinde +%3 SAT, hedefe gelmeden düşerse
+zirve kârın yarısında çık, başka coine geç.
+
+OKX spot emir (opsiyonel). Cekim yok.
+Yatirim tavsiyesi degildir.
 """
 
 from __future__ import annotations
 
-import io
 import os
-import json
 import time
-import math
-import html
-import threading
-from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass, field
+from typing import Dict, List, Optional
 
+import hmac
+import hashlib
+import base64
+import json
 import requests
 
-HAS_VISUALS = True
-try:
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from PIL import Image, ImageDraw, ImageFont
-except Exception as e:
-    HAS_VISUALS = False
-    print("Gorsel kutuphane yok, sadece metin:", e)
-
-VERSION = "18.7"
-
+VERSION = "1.2"
 DRY_RUN = os.getenv("CRYPTOJET_DRYRUN", "").strip().lower() in {"1", "true", "yes"}
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN and not DRY_RUN:
-    raise ValueError("TELEGRAM_BOT_TOKEN yok. Test: export CRYPTOJET_DRYRUN=1")
+    raise ValueError("TELEGRAM_BOT_TOKEN yok. Test: CRYPTOJET_DRYRUN=1")
 
-TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}" if TOKEN else ""
-CB_ADV = "https://api.coinbase.com/api/v3/brokerage"
-COINGECKO_API = os.getenv("COINGECKO_API", "https://api.coingecko.com/api/v3")
-FNG_API = "https://api.alternative.me/fng/?limit=1"
-COINGECKO_KEY = os.getenv("COINGECKO_API_KEY", "").strip()
-CG_SLEEP = float(os.getenv("CG_SLEEP", "1.15"))
+TG = f"https://api.telegram.org/bot{TOKEN}" if TOKEN else ""
+CB = "https://api.coinbase.com/api/v3/brokerage"
 
 session = requests.Session()
-session.headers.update({"User-Agent": f"CryptoJet/{VERSION}", "Accept": "application/json"})
-if COINGECKO_KEY:
-    session.headers["x-cg-demo-api-key"] = COINGECKO_KEY
-    session.headers["x-cg-pro-api-key"] = COINGECKO_KEY
+session.headers.update({"User-Agent": f"ScalpJet/{VERSION}", "Accept": "application/json"})
 
-SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "180"))
-PRODUCT_REFRESH = 1800
-ALERT_COOLDOWN = 1800
-MAX_SCAN_COINS = int(os.getenv("MAX_SCAN_COINS", "40"))
-MIN_QUOTE_VOLUME_USD = float(os.getenv("MIN_QUOTE_VOLUME_USD", "2500000"))
-AUTO_MIN_LEVEL = os.getenv("AUTO_MIN_LEVEL", "ALARM")
-
-# 15m early
-TICK = 0.0010          # %0.10
-MICRO_MIN = 0.0018     # %0.18
-MICRO_MAX = 0.0120     # %1.20
-BODY_MIN = 0.38
-RVOL_OK, RVOL_STRONG = 1.40, 2.00
-
-WATCH_MIN, ALARM_MIN, STRONG_MIN = 500, 630, 750
-ELITE_MIN, EXTREME_MIN = 860, 925
-
-GRAN = {
-    "15M": "FIFTEEN_MINUTE",
-    "1H": "ONE_HOUR",
-    "2H": "TWO_HOUR",
-    "4H": "FOUR_HOUR",
-    "1D": "ONE_DAY",
-}
-GRAN_SEC = {"15M": 900, "1H": 3600, "2H": 7200, "4H": 14400, "1D": 86400}
-CANDLE_TTL = {"15M": 45, "1H": 90, "2H": 180, "4H": 240, "1D": 600}
-LEVEL_RANK = {"NONE": 0, "WATCH": 1, "ALARM": 2, "STRONG": 3, "ELITE": 4, "EXTREME": 5}
-
-active_chat_id: Optional[int] = None
-last_scan_time = 0.0
-last_product_refresh = 0.0
-products_cache: List[Dict] = []
-alert_state: Dict[str, Dict] = {}
-candle_cache: Dict[Tuple[str, str], Tuple[float, List[Dict]]] = {}
-chart_cache: Dict[str, Tuple[float, dict]] = {}
+SCAN_SEC = int(os.getenv("SCAN_SEC", "45"))
+TARGET_PCT = float(os.getenv("TARGET_PCT", "3.0"))
+MAX_HOLD_SEC = int(os.getenv("MAX_HOLD_SEC", "900"))
+ENTRY_MOVE = float(os.getenv("ENTRY_MOVE", "0.45"))
+RVOL_MIN = float(os.getenv("RVOL_MIN", "1.35"))
+STOP_PCT = float(os.getenv("STOP_PCT", "1.20"))
+FEE_PCT = float(os.getenv("FEE_PCT", "0.20"))
+MAX_OPEN = int(os.getenv("MAX_OPEN", "3"))
+WATCH = ["BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "DOGE-USD",
+         "ADA-USD", "AVAX-USD", "LINK-USD", "LTC-USD", "NEAR-USD"]
 
 
-def safe_float(v, d=0.0) -> float:
+OKX_KEY = os.getenv("OKX_API_KEY", "").strip()
+OKX_SEC = os.getenv("OKX_SECRET", "").strip()
+OKX_PASS = os.getenv("OKX_PASSPHRASE", "").strip()
+OKX_LIVE = os.getenv("OKX_LIVE", "0").strip() in {"1", "true", "yes"}
+OKX_DEMO = not OKX_LIVE
+ORDER_USDT = min(float(os.getenv("ORDER_USDT", "10")), float(os.getenv("ORDER_USDT_MAX", "50")))
+OKX_BASE = "https://www.okx.com"
+
+chat_id: Optional[int] = None
+last_scan = 0.0
+products: List[Dict] = []
+paper: Dict[str, Dict] = {}
+cooldown: Dict[str, float] = {}
+trade_armed = False
+
+
+def safe(v, d=0.0) -> float:
     try:
         return float(v)
     except (TypeError, ValueError):
         return d
 
 
-def clamp(v, lo, hi):
-    return max(lo, min(hi, v))
-
-
-def fmt_price(p) -> str:
-    if p is None or p <= 0:
-        return "—"
-    if p >= 1000:
-        return f"${p:,.2f}"
-    if p >= 1:
-        return f"${p:,.4f}"
-    return f"${p:,.8f}"
-
-
-def unix_now() -> int:
-    return int(time.time())
-
-
-# ===================== Telegram =====================
-
-def _post_tg(method: str, data=None, files=None):
+def tg(method: str, data=None) -> bool:
     if DRY_RUN:
-        print(f"[DRYRUN] {method}")
-        return {"ok": True, "result": {"message_id": 1}}
+        if data and data.get("text"):
+            print("\n===== MSG =====\n" + str(data["text"])[:1200] + "\n===============\n")
+        else:
+            print("[DRYRUN]", method)
+        return True
     if not TOKEN:
-        return None
-    try:
-        r = session.post(f"{TELEGRAM_API}/{method}", data=data, files=files, timeout=30)
-        if r.status_code != 200:
-            print("TG", method, r.status_code, r.text[:300])
-            return None
-        return r.json()
-    except Exception as e:
-        print("TG hata:", e)
-        return None
-
-
-def send_message(chat_id, text: str, html_mode: bool = True) -> bool:
-    if DRY_RUN:
-        print("\n===== MSG =====\n" + text[:1600] + "\n===============\n")
-        return True
-    if not chat_id:
         return False
-    payload = {"chat_id": chat_id, "text": text[:3900], "disable_web_page_preview": True}
-    if html_mode:
-        payload["parse_mode"] = "HTML"
-    return bool(_post_tg("sendMessage", data=payload))
-
-
-def send_photo(chat_id, png: bytes, caption: str) -> Optional[int]:
-    if DRY_RUN:
-        print(f"[DRYRUN] photo {len(png)}")
-        return 1
-    if not chat_id:
-        return None
-    data = _post_tg(
-        "sendPhoto",
-        data={"chat_id": chat_id, "caption": caption[:1024], "parse_mode": "HTML"},
-        files={"photo": ("chart.png", png, "image/png")},
-    )
-    if data and data.get("ok"):
-        return data.get("result", {}).get("message_id")
-    return None
-
-
-def edit_photo(chat_id, message_id, png: bytes, caption: str) -> bool:
-    if DRY_RUN:
-        print(f"[DRYRUN] edit photo {len(png)}")
-        return True
-    if not chat_id or not message_id:
+    try:
+        r = session.post(f"{TG}/{method}", data=data, timeout=20)
+        return r.status_code == 200
+    except Exception as e:
+        print("tg", e)
         return False
-    media = json.dumps({
-        "type": "photo",
-        "media": "attach://photo",
-        "caption": caption[:1024],
-        "parse_mode": "HTML",
-    })
-    data = _post_tg(
-        "editMessageMedia",
-        data={"chat_id": chat_id, "message_id": message_id, "media": media},
-        files={"photo": ("chart.png", png, "image/png")},
-    )
-    return bool(data and data.get("ok"))
 
 
-def send_animation(chat_id, gif: bytes, caption: str) -> bool:
-    if DRY_RUN:
-        print(f"[DRYRUN] gif {len(gif)}")
-        return True
-    if not chat_id:
-        return False
-    return _post_tg(
-        "sendAnimation",
-        data={"chat_id": chat_id, "caption": caption[:1024], "parse_mode": "HTML"},
-        files={"animation": ("jet.gif", gif, "image/gif")},
-    )
-
-
-# ===================== Data (CoinGecko ana, Coinbase yedek) =====================
-
-_cg_last = 0.0
-USE_CG = True
-_cg_strikes = 0
-scan_busy = False
-scan_lock = threading.Lock()
-live_chat_id: Optional[int] = None
-live_last = 0.0
-LIVE_INTERVAL = float(os.getenv("LIVE_INTERVAL", "8"))
-LIVE_MOVE = float(os.getenv("LIVE_MOVE", "0.0015"))  # %0.15
-live_px: Dict[str, Dict] = {}
-live_trade_cd: Dict[str, float] = {}
-live_signals: Dict[str, str] = {}
-last_results: List = []
-last_market: Dict = {}
-table_msg_id: Optional[int] = None
-table_chat_id: Optional[int] = None
-LIVE_WATCH = ["BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "DOGE-USD"]
-LIVE_TRADE_CD = 900
-TABLE_REFRESH = float(os.getenv("TABLE_REFRESH", "25"))
-table_last_push = 0.0
-SKIP_SYM = {"USD", "USDC", "USDT", "DAI", "EUR", "GBP", "PYUSD", "FDUSD", "TUSD", "USDE", "USDS"}
-STABLE_IDS = {"tether", "usd-coin", "binance-usd", "dai", "first-digital-usd", "true-usd", "ethena-usde"}
-GECKO_ALIAS = {
-    "BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "XRP": "ripple",
-    "DOGE": "dogecoin", "ADA": "cardano", "AVAX": "avalanche-2", "LINK": "chainlink",
-    "DOT": "polkadot", "LTC": "litecoin", "BCH": "bitcoin-cash", "SUI": "sui",
-    "NEAR": "near", "UNI": "uniswap", "AAVE": "aave", "PEPE": "pepe",
-}
-
-
-def cg_get(path: str, params=None):
-    global _cg_last, USE_CG, _cg_strikes
-    if not USE_CG:
-        return None
-    url = COINGECKO_API + path
-    for attempt in range(2):
-        wait = CG_SLEEP - (time.time() - _cg_last)
-        if wait > 0:
-            time.sleep(wait)
-        try:
-            r = session.get(url, params=params, timeout=12)
-            _cg_last = time.time()
-            if r.status_code == 200:
-                _cg_strikes = 0
-                return r.json()
-            if r.status_code == 429:
-                _cg_strikes += 1
-                print("CoinGecko 429 — Coinbase yedeğe geçiliyor")
-                if _cg_strikes >= 2:
-                    USE_CG = False
-                return None
-            print(f"CG {r.status_code} {path}: {r.text[:120]}")
-        except Exception as e:
-            print("CG", e)
-            time.sleep(1)
-    return None
-
-
-def adv_get(path: str, params=None):
-    for attempt in range(3):
-        try:
-            r = session.get(CB_ADV + path, params=params, timeout=16)
-            if r.status_code == 200:
-                return r.json()
-            if r.status_code == 429:
-                time.sleep(1.6 * (attempt + 1))
-                continue
-        except Exception as e:
-            print("CB", e)
-            time.sleep(1.0)
-    return None
-
-
-def _bucket_candles(prices, volumes, bucket: int) -> List[Dict]:
-    bars: Dict[int, Dict] = {}
-    for ts_ms, px in prices or []:
-        t = int(ts_ms / 1000)
-        b = t - (t % bucket)
-        px = safe_float(px)
-        if px <= 0:
-            continue
-        bar = bars.get(b)
-        if not bar:
-            bars[b] = {"time": float(b), "open": px, "high": px, "low": px, "close": px, "volume": 0.0}
-        else:
-            bar["high"] = max(bar["high"], px)
-            bar["low"] = min(bar["low"], px)
-            bar["close"] = px
-    for ts_ms, vol in volumes or []:
-        t = int(ts_ms / 1000)
-        b = t - (t % bucket)
-        if b in bars:
-            bars[b]["volume"] += safe_float(vol)
-    return [bars[k] for k in sorted(bars)]
-
-
-def _ohlc_rows(rows) -> List[Dict]:
-    out = []
-    if not isinstance(rows, list):
-        return out
-    for row in rows:
-        if not isinstance(row, list) or len(row) < 5:
-            continue
-        c = {
-            "time": safe_float(row[0]) / 1000.0,
-            "open": safe_float(row[1]),
-            "high": safe_float(row[2]),
-            "low": safe_float(row[3]),
-            "close": safe_float(row[4]),
-            "volume": 0.0,
-        }
-        if c["close"] > 0:
-            out.append(c)
-    out.sort(key=lambda x: x["time"])
-    return out
-
-
-def _group_daily(c4h: List[Dict]) -> List[Dict]:
-    days: Dict[int, Dict] = {}
-    for c in c4h:
-        day = int(c["time"] - (c["time"] % 86400))
-        d = days.get(day)
-        if not d:
-            days[day] = {
-                "time": float(day), "open": c["open"], "high": c["high"],
-                "low": c["low"], "close": c["close"], "volume": c["volume"],
-            }
-        else:
-            d["high"] = max(d["high"], c["high"])
-            d["low"] = min(d["low"], c["low"])
-            d["close"] = c["close"]
-            d["volume"] += c["volume"]
-    return [days[k] for k in sorted(days)]
-
-
-def _cb_fallback(symbol: str, tf: str, limit: int) -> List[Dict]:
-    pid = f"{symbol}-USD"
-    gran = GRAN.get(tf)
-    if not gran:
-        return []
-    sec = GRAN_SEC[tf]
-    end, start = unix_now(), unix_now() - sec * (limit + 8)
-    data = adv_get(
-        f"/market/products/{pid}/candles",
-        {"granularity": gran, "start": str(start), "end": str(end), "limit": min(limit + 8, 350)},
-    )
-    rows = data.get("candles") if isinstance(data, dict) else None
-    if not isinstance(rows, list):
-        return []
-    candles = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        c = {
-            "time": safe_float(row.get("start")),
-            "low": safe_float(row.get("low")),
-            "high": safe_float(row.get("high")),
-            "open": safe_float(row.get("open")),
-            "close": safe_float(row.get("close")),
-            "volume": safe_float(row.get("volume")),
-        }
-        if c["close"] > 0:
-            candles.append(c)
-    candles.sort(key=lambda x: x["time"])
-    return candles[-limit:]
-
-
-def get_products(force: bool = False) -> List[Dict]:
-    global products_cache, last_product_refresh
-    now = time.time()
-    if products_cache and not force and now - last_product_refresh < PRODUCT_REFRESH:
-        return products_cache
-    raw = cg_get("/coins/markets", {
-        "vs_currency": "usd",
-        "order": "volume_desc",
-        "per_page": min(MAX_SCAN_COINS + 15, 100),
-        "page": 1,
-        "price_change_percentage": "1h,24h",
-    })
-    if not isinstance(raw, list):
-        print("CoinGecko markets alınamadı, Coinbase yedek.")
-        data = adv_get("/market/products", {"product_type": "SPOT", "limit": 1000})
-        raw_cb = data.get("products") if isinstance(data, dict) else []
-        out = []
-        for p in raw_cb or []:
-            base = p.get("base_currency_id") or ""
-            if p.get("quote_currency_id") != "USD" or base in SKIP_SYM:
-                continue
-            if p.get("status") != "online" or p.get("trading_disabled"):
-                continue
-            price = safe_float(p.get("price"))
-            qv = price * safe_float(p.get("volume_24h"))
-            if qv < MIN_QUOTE_VOLUME_USD:
-                continue
-            out.append({
-                "id": GECKO_ALIAS.get(base, base.lower()),
-                "base": base,
-                "price": price,
-                "quote_vol": qv,
-                "chg_24h": safe_float(p.get("price_percentage_change_24h")),
-            })
-        products_cache = sorted(out, key=lambda x: x["quote_vol"], reverse=True)[:MAX_SCAN_COINS]
-        last_product_refresh = now
-        return products_cache
-
-    out = []
-    for p in raw:
-        try:
-            gid = p.get("id") or ""
-            base = (p.get("symbol") or "").upper()
-            if gid in STABLE_IDS or base in SKIP_SYM:
-                continue
-            qv = safe_float(p.get("total_volume"))
-            if qv < MIN_QUOTE_VOLUME_USD:
-                continue
-            out.append({
-                "id": gid,
-                "base": base,
-                "price": safe_float(p.get("current_price")),
-                "quote_vol": qv,
-                "chg_24h": safe_float(p.get("price_change_percentage_24h")),
-                "chg_1h": safe_float(p.get("price_change_percentage_1h_in_currency")),
-            })
-        except Exception:
-            continue
-    products_cache = out[:MAX_SCAN_COINS]
-    last_product_refresh = now
-    print(f"Likit coin (CoinGecko): {len(products_cache)}")
-    return products_cache
-
-
-def resolve_id(product_id: str) -> Tuple[str, str]:
-    """return (gecko_id, base_symbol)"""
-    pid = product_id.strip()
-    if pid.endswith("-USD"):
-        base = pid[:-4].upper()
-        return GECKO_ALIAS.get(base, pid.lower()), base
-    for p in products_cache:
-        if p["id"] == pid or p["base"] == pid.upper():
-            return p["id"], p["base"]
-    if pid.upper() in GECKO_ALIAS:
-        return GECKO_ALIAS[pid.upper()], pid.upper()
-    return pid.lower(), pid.upper()
-
-
-def get_candles(product_id: str, tf: str, limit: int = 80) -> List[Dict]:
-    now = time.time()
-    key = (product_id, tf)
-    cached = candle_cache.get(key)
-    if cached and now - cached[0] < CANDLE_TTL.get(tf, 90):
-        return cached[1][-limit:]
-
-    gid, base = resolve_id(product_id)
-    candles: List[Dict] = []
-
-    if tf in {"15M", "1H", "2H"}:
-        packed = chart_cache.get(gid)
-        if packed and now - packed[0] < 70:
-            chart = packed[1]
-        else:
-            chart = cg_get(f"/coins/{gid}/market_chart", {"vs_currency": "usd", "days": "1"})
-            if isinstance(chart, dict):
-                chart_cache[gid] = (now, chart)
-        if isinstance(chart, dict):
-            candles = _bucket_candles(chart.get("prices"), chart.get("total_volumes"), GRAN_SEC[tf])
-    elif tf == "4H":
-        rows = cg_get(f"/coins/{gid}/ohlc", {"vs_currency": "usd", "days": "14"})
-        candles = _ohlc_rows(rows)
-    elif tf == "1D":
-        rows = cg_get(f"/coins/{gid}/ohlc", {"vs_currency": "usd", "days": "30"})
-        candles = _group_daily(_ohlc_rows(rows))
-
-    if len(candles) < 8:
-        fb = _cb_fallback(base, tf, limit)
-        if fb:
-            candles = fb
-
-    candles = candles[-limit:]
-    candle_cache[key] = (now, candles)
-    return candles
-
-
-# ===================== Teknik =====================
-
-def ema(values: List[float], period: int) -> Optional[float]:
-    if len(values) < period:
-        return None
-    k = 2 / (period + 1)
-    res = sum(values[:period]) / period
-    for v in values[period:]:
-        res = (v - res) * k + res
-    return res
-
-
-def ema_series(values: List[float], period: int) -> List[Optional[float]]:
-    out: List[Optional[float]] = [None] * len(values)
-    if len(values) < period:
-        return out
-    k = 2 / (period + 1)
-    res = sum(values[:period]) / period
-    out[period - 1] = res
-    for i in range(period, len(values)):
-        res = (values[i] - res) * k + res
-        out[i] = res
-    return out
-
-
-def atr(candles: List[Dict], period: int = 14) -> Optional[float]:
-    if len(candles) < period + 1:
-        return None
-    trs = []
-    for i in range(1, len(candles)):
-        c, p = candles[i], candles[i - 1]
-        trs.append(max(c["high"] - c["low"], abs(c["high"] - p["close"]), abs(c["low"] - p["close"])))
-    return sum(trs[-period:]) / period
-
-
-def bollinger_width(candles: List[Dict], period: int = 20) -> Optional[float]:
-    if len(candles) < period:
-        return None
-    closes = [c["close"] for c in candles[-period:]]
-    mid = sum(closes) / period
-    std = math.sqrt(sum((x - mid) ** 2 for x in closes) / period)
-    return (2 * std) / mid if mid > 0 else None
-
-
-def rsi(values: List[float], period: int = 14) -> Optional[float]:
-    if len(values) <= period:
-        return None
-    gains, losses = [], []
-    for i in range(1, len(values)):
-        d = values[i] - values[i - 1]
-        gains.append(max(d, 0.0))
-        losses.append(abs(min(d, 0.0)))
-    ag, al = sum(gains[:period]) / period, sum(losses[:period]) / period
-    for i in range(period, len(gains)):
-        ag = (ag * (period - 1) + gains[i]) / period
-        al = (al * (period - 1) + losses[i]) / period
-    if al == 0:
-        return 100.0
-    return 100.0 - (100.0 / (1.0 + ag / al))
-
-
-def directional_strength(candles: List[Dict], lookback: int = 20) -> float:
-    if len(candles) < lookback + 1:
-        return 0.0
-    seq = candles[-lookback:]
-    net = abs(seq[-1]["close"] - seq[0]["close"])
-    path = sum(abs(seq[i]["close"] - seq[i - 1]["close"]) for i in range(1, len(seq)))
-    return clamp(net / path, 0, 1) if path > 0 else 0.0
-
-
-def relative_volume(candles: List[Dict], lookback: int = 16) -> float:
-    if len(candles) < lookback + 1:
-        return 1.0
-    avg = sum(c["volume"] for c in candles[-lookback - 1:-1]) / lookback
-    return candles[-1]["volume"] / avg if avg > 0 else 1.0
-
-
-def body_ratio(c: Dict) -> float:
-    rng = c["high"] - c["low"]
-    if rng <= 0:
-        return 0.0
-    return abs(c["close"] - c["open"]) / rng
-
-
-def last_change(candles: List[Dict]) -> float:
-    if len(candles) < 2 or candles[-2]["close"] <= 0:
-        return 0.0
-    return (candles[-1]["close"] - candles[-2]["close"]) / candles[-2]["close"]
-
-
-def get_tf_bias(candles: List[Dict]) -> str:
-    if len(candles) < 26:
-        return "NEUTRAL"
-    closes = [c["close"] for c in candles]
-    e20 = ema(closes, 20)
-    e50 = ema(closes, 50) if len(closes) >= 50 else None
-    px = closes[-1]
-    if e20 is None:
-        return "NEUTRAL"
-    if e50 is not None:
-        if px > e20 > e50:
-            return "LONG"
-        if px < e20 < e50:
-            return "SHORT"
-    if px > e20:
-        return "LONG"
-    if px < e20:
-        return "SHORT"
-    return "NEUTRAL"
-
-
-def swing_levels(candles: List[Dict], lookback: int = 24) -> Dict:
-    if len(candles) < 8:
-        return {"high": None, "low": None}
-    w = candles[-lookback:-1] if len(candles) > lookback else candles[:-1]
-    if not w:
-        return {"high": None, "low": None}
-    return {"high": max(c["high"] for c in w), "low": min(c["low"] for c in w)}
-
-
-def structure_bias(candles: List[Dict]) -> str:
-    if len(candles) < 20:
-        return "NEUTRAL"
-    mid = len(candles) // 2
-    h1, h2 = max(c["high"] for c in candles[:mid]), max(c["high"] for c in candles[mid:])
-    l1, l2 = min(c["low"] for c in candles[:mid]), min(c["low"] for c in candles[mid:])
-    if h2 > h1 and l2 > l1:
-        return "LONG"
-    if h2 < h1 and l2 < l1:
-        return "SHORT"
-    return "NEUTRAL"
-
-
-def calc_compression(candles: List[Dict]) -> Dict:
-    empty = {"score": 0.0, "bb_width": None, "atr_ratio": None, "range_pct": None}
-    if len(candles) < 32:
-        return empty
-    bb = bollinger_width(candles, 20)
-    a1, a0 = atr(candles[-16:], 14), atr(candles[-30:-16], 14)
-    atr_ratio = (a1 / a0) if a0 and a0 > 0 else 1.0
-    recent = candles[-12:]
-    hi, lo = max(c["high"] for c in recent), min(c["low"] for c in recent)
-    mid = (hi + lo) / 2
-    range_pct = (hi - lo) / mid if mid > 0 else 1
-    score = 0.0
-    if bb is not None:
-        score += 42 if bb < 0.025 else 33 if bb < 0.036 else 22 if bb < 0.048 else 12 if bb < 0.062 else 0
-    score += 32 if atr_ratio < 0.75 else 23 if atr_ratio < 0.85 else 13 if atr_ratio < 0.94 else 0
-    score += 26 if range_pct < 0.018 else 19 if range_pct < 0.028 else 11 if range_pct < 0.040 else 0
-    return {"score": clamp(score, 0, 100), "bb_width": bb, "atr_ratio": atr_ratio, "range_pct": range_pct}
-
-
-def detect_early(c15: List[Dict]) -> Dict:
-    empty = {
-        "active": False, "early": False, "direction": None, "pct": 0.0,
-        "rvol": 1.0, "volume_ok": False, "breakout": False,
-        "body": 0.0, "body_ok": False,
-    }
-    if len(c15) < 12:
-        return empty
-    last = c15[-1]
-    chg = last_change(c15)
-    direction = "LONG" if chg > 0 else "SHORT" if chg < 0 else None
-    rvol = relative_volume(c15, 16)
-    body = body_ratio(last)
-    sw = swing_levels(c15, 16)
-    breakout = False
-    if direction == "LONG" and sw["high"] and last["close"] > sw["high"] and last["close"] >= last["open"]:
-        breakout = True
-    if direction == "SHORT" and sw["low"] and last["close"] < sw["low"] and last["close"] <= last["open"]:
-        breakout = True
-    abs_m = abs(chg)
-    return {
-        "active": MICRO_MIN <= abs_m <= MICRO_MAX,
-        "early": TICK <= abs_m < MICRO_MIN,
-        "direction": direction if abs_m >= TICK or breakout else None,
-        "pct": abs_m * 100,
-        "rvol": rvol,
-        "volume_ok": rvol >= RVOL_OK,
-        "breakout": breakout,
-        "body": body,
-        "body_ok": body >= BODY_MIN,
-    }
-
-
-# ===================== Context =====================
-
-def get_fear_greed() -> Dict:
-    try:
-        r = session.get(FNG_API, timeout=8)
-        if r.status_code == 200:
-            row = r.json().get("data", [{}])[0]
-            return {"value": int(safe_float(row.get("value"), 50)), "label": row.get("value_classification", "Neutral")}
-    except Exception as e:
-        print("FNG", e)
-    return {"value": 50, "label": "Neutral"}
-
-
-def get_market_context() -> Dict:
-    btc_price = btc_change = 0.0
-    dominance = 52.0
-    regime, btc_trend = "RANGE", "NEUTRAL"
-    try:
-        btc = cg_get("/coins/bitcoin", {"localization": "false", "tickers": "false", "community_data": "false", "developer_data": "false", "sparkline": "false"})
-        md = (btc or {}).get("market_data") or {}
-        btc_price = safe_float((md.get("current_price") or {}).get("usd"))
-        btc_change = safe_float(md.get("price_change_percentage_24h"))
-    except Exception as e:
-        print("BTC", e)
-    if btc_price <= 0:
-        for p in get_products():
-            if p["id"] == "bitcoin" or p["base"] == "BTC":
-                btc_price = p["price"]
-                btc_change = p.get("chg_24h", 0.0)
-                break
-
-    c15 = get_candles("bitcoin", "15M", 40)
-    c4h = get_candles("bitcoin", "4H", 60)
-    c1d = get_candles("bitcoin", "1D", 50)
-    btc_15 = last_change(c15) * 100 if len(c15) >= 2 else 0.0
-
-    if len(c4h) >= 30:
-        btc_trend = get_tf_bias(c4h)
-        ds = directional_strength(c4h)
-        bb = bollinger_width(c4h, 20)
-        if bb is not None and bb < 0.035 and ds < 0.22:
-            regime = "SQUEEZE"
-        elif ds < 0.18:
-            regime = "RANGE"
-        elif btc_trend == "LONG" and btc_change > 0:
-            regime = "BULL"
-        elif btc_trend == "SHORT" and btc_change < 0:
-            regime = "BEAR"
-        else:
-            regime = "TRANSITION"
-
-    try:
-        r = session.get(f"{COINGECKO_API}/global", timeout=10)
-        if r.status_code == 200:
-            dominance = safe_float(r.json().get("data", {}).get("market_cap_percentage", {}).get("btc", 52))
-    except Exception as e:
-        print("DOM", e)
-
-    if dominance >= 56:
-        dom_bias = "BEARISH_ALT"
-    elif dominance <= 48:
-        dom_bias = "BULLISH_ALT"
-    else:
-        dom_bias = "NEUTRAL"
-
-    fng = get_fear_greed()
-    return {
-        "btc_price": btc_price,
-        "btc_change": btc_change,
-        "btc_15m": btc_15,
-        "regime": regime,
-        "btc_trend": btc_trend,
-        "dominance": dominance,
-        "dom_bias": dom_bias,
-        "btc_1d_bias": get_tf_bias(c1d) if len(c1d) >= 25 else "NEUTRAL",
-        "fng": fng["value"],
-        "fng_label": fng["label"],
-    }
-
-
-def volume_side_pct(candles: List[Dict], lookback: int = 12) -> Tuple[float, float]:
-    """Son 12 x 15m = 3 saat alım/satım hacim payı."""
-    bars = candles[-lookback:] if candles else []
-    buy = sum(c["volume"] for c in bars if c["close"] >= c["open"])
-    sell = sum(c["volume"] for c in bars if c["close"] < c["open"])
-    tot = buy + sell
-    if tot <= 0:
-        return 50.0, 50.0
-    return 100.0 * buy / tot, 100.0 * sell / tot
-
-
-def mtf_side_pct(bias: Dict) -> Tuple[float, float]:
-    """15m+1H+2H+4H+1D ağırlıklı long/short %."""
-    w = {"15M": 10, "1H": 20, "2H": 15, "4H": 25, "1D": 30}
-    long_w = short_w = 0.0
-    for tf, wt in w.items():
-        side = bias.get(tf)
-        if side == "LONG":
-            long_w += wt
-        elif side == "SHORT":
-            short_w += wt
-    tot = long_w + short_w
-    if tot <= 0:
-        return 50.0, 50.0
-    return 100.0 * long_w / tot, 100.0 * short_w / tot
-
-
-# ===================== Analiz =====================
-
-@dataclass
-class Result:
-    product: Dict
-    price: float
-    decision: str
-    score: int
-    level: str
-    position: str
-    confidence: int
-    invalidation: Optional[float]
-    compression: Dict
-    early: Dict
-    tf_bias: Dict
-    market: Dict
-    checks: List[Tuple[str, bool]]
-    parts: Dict = field(default_factory=dict)
-    reasons: List[str] = field(default_factory=list)
-    c15: List[Dict] = field(default_factory=list)
-    c1h: List[Dict] = field(default_factory=list)
-    swings4h: Dict = field(default_factory=dict)
-    rel_btc: float = 0.0
-    buy_pct: float = 50.0
-    sell_pct: float = 50.0
-    long_pct: float = 50.0
-    short_pct: float = 50.0
-
-
-def analyze(product: Dict, market: Dict) -> Optional[Result]:
-    c15 = get_candles(product["id"], "15M", 50)
-    c1h = get_candles(product["id"], "1H", 70)
-    if len(c15) < 20 or len(c1h) < 36:
-        return None
-    c2h = get_candles(product["id"], "2H", 45)
-    c4h = get_candles(product["id"], "4H", 55)
-    c1d = get_candles(product["id"], "1D", 40)
-
-    price = c15[-1]["close"]
-    early = detect_early(c15)
-    comp1 = calc_compression(c1h)
-    comp4 = calc_compression(c4h) if len(c4h) >= 32 else {"score": 0.0}
-    swings4h = swing_levels(c4h, 20) if len(c4h) >= 10 else {"high": None, "low": None}
-    struct4 = structure_bias(c4h) if len(c4h) >= 20 else "NEUTRAL"
-
-    bias = {
-        "15M": get_tf_bias(c15),
-        "1H": get_tf_bias(c1h),
-        "2H": get_tf_bias(c2h) if len(c2h) >= 26 else "NEUTRAL",
-        "4H": get_tf_bias(c4h) if len(c4h) >= 30 else "NEUTRAL",
-        "1D": get_tf_bias(c1d) if len(c1d) >= 25 else "NEUTRAL",
-    }
-
-    coin_15 = last_change(c15) * 100
-    rel_btc = coin_15 - market.get("btc_15m", 0.0)
-    rsi_v = rsi([c["close"] for c in c1h], 14)
-    rvol = safe_float(early.get("rvol"), 1.0)
-
-    direction = early.get("direction")
-    votes = [bias[k] for k in ("1H", "2H", "4H", "1D") if bias[k] != "NEUTRAL"]
-    if not direction:
-        if votes.count("LONG") >= 3:
-            direction = "LONG"
-        elif votes.count("SHORT") >= 3:
-            direction = "SHORT"
-
-    reasons, parts = [], {}
-    parts["compression"] = comp1["score"] * 1.4 + comp4.get("score", 0) * 0.8
-    if comp1["score"] >= 65:
-        reasons.append(f"1H sıkışma {comp1['score']:.0f}")
-    if comp4.get("score", 0) >= 55:
-        reasons.append(f"4H sıkışma {comp4['score']:.0f}")
-
-    ev = 0.0
-    if early["active"]:
-        ev += 95
-        reasons.append(f"15m hareket %{early['pct']:.2f} {early.get('direction')}")
-    elif early.get("early"):
-        ev += 50
-        reasons.append(f"15m tick %{early['pct']:.2f}")
-    if early.get("breakout") and early.get("body_ok"):
-        ev += 70
-        reasons.append("15m gövdeli kırılım")
-    elif early.get("breakout"):
-        ev += 18
-        reasons.append("15m fitil — zayıf")
-    if early.get("volume_ok"):
-        ev += 28
-    if direction == "LONG" and rel_btc >= 0.15:
-        ev += 20
-        reasons.append(f"BTC'den güçlü ({rel_btc:+.2f}%)")
-    elif direction == "SHORT" and rel_btc <= -0.15:
-        ev += 20
-        reasons.append(f"BTC'den zayıf ({rel_btc:+.2f}%)")
-    parts["early"] = clamp(ev, 0, 220)
-    parts["volume"] = 140 if rvol >= 2.5 else 110 if rvol >= RVOL_STRONG else 80 if rvol >= RVOL_OK else 30 if rvol >= 1.1 else 8
-
-    mom = 40
-    if rsi_v is not None:
-        if 48 <= rsi_v <= 68:
-            mom += 28
-        elif rsi_v > 78 or rsi_v < 24:
-            mom -= 22
-    parts["momentum"] = clamp(mom, 0, 120)
-
-    tf_pts = 0
-    if direction:
-        same = sum(1 for v in votes if v == direction)
-        opp = sum(1 for v in votes if v != direction)
-        tf_pts = same * 38 - opp * 30
-        if bias["15M"] == direction:
-            tf_pts += 15
-        if struct4 == direction:
-            tf_pts += 22
-        elif struct4 not in ("NEUTRAL", direction):
-            tf_pts -= 22
-    parts["mtf"] = clamp(tf_pts, 0, 210)
-
-    ctx = 48
-    if direction == "LONG":
-        if market["regime"] == "BULL":
-            ctx += 28
-        if market["btc_trend"] == "LONG":
-            ctx += 16
-        if market["dom_bias"] == "BULLISH_ALT":
-            ctx += 16
-        if market["fng"] <= 25 and market["regime"] != "BEAR":
-            ctx += 8
-        if market["regime"] == "BEAR" or market["btc_change"] < -1.8:
-            ctx -= 48
-            reasons.append("BTC long aleyhine")
-        if market["dom_bias"] == "BEARISH_ALT":
-            ctx -= 16
-            reasons.append("BTC.D yüksek")
-        if market["fng"] >= 80:
-            ctx -= 10
-            reasons.append("Aşırı greed")
-    elif direction == "SHORT":
-        if market["regime"] == "BEAR":
-            ctx += 28
-        if market["btc_trend"] == "SHORT":
-            ctx += 16
-        if market["regime"] == "BULL" and market["btc_change"] > 1.8:
-            ctx -= 48
-            reasons.append("BTC short aleyhine")
-        if market["fng"] >= 75:
-            ctx += 8
-    parts["context"] = clamp(ctx, 0, 130)
-
-    score = int(clamp(sum(parts.values()), 0, 1000))
-
-    d = direction
-    checks = [
-        ("15m hareket", bool(early["active"] or early.get("early") or early.get("breakout"))),
-        ("Gövde kaliteli", bool(early.get("body_ok"))),
-        ("Hacim", rvol >= RVOL_OK),
-        ("1H aynı yön", bias["1H"] == d and bool(d)),
-        ("4H aynı yön", bias["4H"] == d and bool(d)),
-        ("4H yapı uygun", struct4 in (d, "NEUTRAL") and bool(d)),
-        ("Sıkışma/enerji", comp1["score"] >= 42 or comp4.get("score", 0) >= 42),
-        ("BTC rejim uygun", not (
-            (d == "LONG" and (market["regime"] == "BEAR" or market["btc_change"] < -2.2))
-            or (d == "SHORT" and market["regime"] == "BULL" and market["btc_change"] > 2.2)
-        )),
-        ("BTC.D altcoin için", not (d == "LONG" and market["dom_bias"] == "BEARISH_ALT" and market["dominance"] >= 58)),
-        ("Göreli güç", bool(d == "LONG" and rel_btc >= 0) or bool(d == "SHORT" and rel_btc <= 0) or abs(rel_btc) < 0.08),
-    ]
-    passed = sum(1 for _, ok in checks if ok)
-    confidence = int(round(100 * passed / len(checks)))
-
-    if score >= EXTREME_MIN:
-        level = "EXTREME"
-    elif score >= ELITE_MIN:
-        level = "ELITE"
-    elif score >= STRONG_MIN:
-        level = "STRONG"
-    elif score >= ALARM_MIN:
-        level = "ALARM"
-    elif score >= WATCH_MIN:
-        level = "WATCH"
-    else:
-        level = "NONE"
-
-    if early["active"] and early.get("direction"):
-        decision = early["direction"]
-    elif early.get("breakout") and early.get("body_ok") and early.get("direction"):
-        decision = early["direction"]
-    elif passed >= 6 and d:
-        decision = d
-    elif (comp1["score"] >= 68 or early.get("early")) and score >= 450:
-        decision = "WATCH"
-    else:
-        decision = "BEKLE"
-
-    hard_fail = (
-        not d
-        or (d == "LONG" and market["regime"] == "BEAR" and market["btc_change"] < -2)
-        or (d == "SHORT" and market["regime"] == "BULL" and market["btc_change"] > 2)
-        or (early.get("breakout") and not early.get("body_ok") and rvol < RVOL_OK)
-        or (bias["4H"] not in ("NEUTRAL", d) and passed < 6)
-    )
-    if decision == "BEKLE" or level == "NONE" or not d or hard_fail or passed <= 4:
-        position = "UYGUN DEĞİL"
-    elif passed >= 8 and level in {"STRONG", "ELITE", "EXTREME"} and early.get("body_ok") and rvol >= RVOL_OK:
-        position = f"UYGUN {d}"
-    elif passed >= 6 and level in {"ALARM", "STRONG", "ELITE", "EXTREME"}:
-        position = f"KOŞULLU {d}"
-    elif passed >= 5 and level in {"WATCH", "ALARM"}:
-        position = f"KOŞULLU {d}"
-    else:
-        position = "UYGUN DEĞİL"
-
-    inv = swings4h.get("low") if d == "LONG" else swings4h.get("high") if d == "SHORT" else None
-
-    buy_pct, sell_pct = volume_side_pct(c15, 12)
-    long_pct, short_pct = mtf_side_pct(bias)
-    return Result(
-        product=product, price=price, decision=decision, score=score, level=level,
-        position=position, confidence=confidence, invalidation=inv,
-        compression=comp1, early=early, tf_bias=bias, market=market,
-        checks=checks, parts=parts, reasons=reasons,
-        c15=c15, c1h=c1h, swings4h=swings4h, rel_btc=rel_btc,
-        buy_pct=buy_pct, sell_pct=sell_pct, long_pct=long_pct, short_pct=short_pct,
-    )
-
-
-# ===================== Görsel =====================
-
-def _font(size: int):
-    for p in (
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ):
-        if os.path.exists(p):
-            return ImageFont.truetype(p, size)
-    return ImageFont.load_default()
-
-
-def make_chart(r: Result) -> Optional[bytes]:
-    if not HAS_VISUALS:
-        return None
-    c = r.c15[-48:] if len(r.c15) >= 20 else r.c1h[-60:]
-    if len(c) < 12:
-        return None
-    tf_name = "15M" if c is r.c15[-48:] or (r.c15 and c[0] is r.c15[-48:][0] if r.c15 else False) else "1H"
-    if len(r.c15) >= 20:
-        c, tf_name = r.c15[-48:], "15M"
-    else:
-        c, tf_name = r.c1h[-60:], "1H"
-    closes = [x["close"] for x in c]
-    e20, e50 = ema_series(closes, 20), ema_series(closes, 50)
-    fig, axes = plt.subplots(2, 1, figsize=(8.2, 5.2), gridspec_kw={"height_ratios": [3.2, 1]}, facecolor="#0b0f14")
-    ax, axv = axes
-    ax.set_facecolor("#0b0f14")
-    axv.set_facecolor("#0b0f14")
-    for a in axes:
-        a.tick_params(colors="#8b9bb4", labelsize=8)
-        for s in a.spines.values():
-            s.set_color("#243044")
-    xs = list(range(len(c)))
-    for i, bar in enumerate(c):
-        col = "#3dd68c" if bar["close"] >= bar["open"] else "#f07178"
-        ax.plot([i, i], [bar["low"], bar["high"]], color=col, lw=0.8)
-        lo, hi = min(bar["open"], bar["close"]), max(bar["open"], bar["close"])
-        ax.plot([i, i], [lo, hi], color=col, lw=3.0)
-    ax.plot(xs, e20, color="#7aa2f7", lw=1.2, label="EMA20")
-    ax.plot(xs, e50, color="#c0a6ff", lw=1.2, label="EMA50")
-    if r.swings4h.get("high"):
-        ax.axhline(r.swings4h["high"], color="#f07178", ls="--", lw=0.8, alpha=0.65)
-    if r.swings4h.get("low"):
-        ax.axhline(r.swings4h["low"], color="#3dd68c", ls="--", lw=0.8, alpha=0.65)
-    pos = r.position.replace("UYGUN DEĞİL", "UYGUN DEGIL").replace("KOŞULLU", "KOSULLU")
-    ax.set_title(f"{r.product['base']}-USD  {tf_name}  {pos}  {r.score}/1000", color="#e6edf7", fontsize=11, pad=8)
-    ax.legend(facecolor="#0b0f14", edgecolor="#243044", labelcolor="#c8d3e8", fontsize=7)
-    vols = [x["volume"] for x in c]
-    vcol = ["#3dd68c" if x["close"] >= x["open"] else "#f07178" for x in c]
-    axv.bar(xs, vols, color=vcol, width=0.7, alpha=0.85)
-    axv.set_ylabel("Vol", color="#8b9bb4", fontsize=8)
-    fig.tight_layout()
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=120, facecolor=fig.get_facecolor())
-    plt.close(fig)
-    return buf.getvalue()
-
-
-def make_alert_gif(r: Result) -> Optional[bytes]:
-    if not HAS_VISUALS:
-        return None
-    w, h = 720, 380
-    pos_col = "#3dd68c" if r.position.startswith("UYGUN ") else "#ffcc66" if r.position.startswith("KOŞULLU") else "#f07178"
-    frames = []
-    for i in range(10):
-        t = i / 9
-        img = Image.new("RGB", (w, h), "#070b10")
-        d = ImageDraw.Draw(img)
-        d.rounded_rectangle([16, 16, w - 16, h - 16], 28, outline="#1e2a3c", width=2)
-        d.ellipse([36, 36, 88, 88], fill=pos_col)
-        d.text((108, 38), f"CRYPTO JET  V{VERSION}", font=_font(20), fill="#9fb3c8")
-        d.text((108, 68), r.product["base"], font=_font(38), fill="#e8eef7")
-        d.text((36, 120), r.position, font=_font(28), fill=pos_col)
-        d.text((36, 162), f"{r.decision}   {r.level}   {r.score}/1000", font=_font(18), fill="#c5d0e0")
-        bar_x, bar_y, bar_w, bar_h = 36, 220, 648, 26
-        d.rounded_rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h], 10, fill="#152033")
-        fill_w = int(bar_w * (r.score / 1000) * t)
-        d.rounded_rectangle([bar_x, bar_y, bar_x + max(fill_w, 8), bar_y + bar_h], 10, fill=pos_col)
-        d.text((36, 268), f"Guven %{r.confidence}   Onay {sum(1 for _,ok in r.checks if ok)}/{len(r.checks)}   vsBTC {r.rel_btc:+.2f}%", font=_font(16), fill="#9fb3c8")
-        d.text((36, 304), f"15m %{r.early.get('pct',0):.2f}   rVol {r.early.get('rvol',0):.2f}x", font=_font(16), fill="#9fb3c8")
-        frames.append(img)
-    buf = io.BytesIO()
-    frames[0].save(buf, format="GIF", save_all=True, append_images=frames[1:], duration=90, loop=0)
-    return buf.getvalue()
-
-
-def _pct(v, digits=2) -> str:
-    try:
-        return f"{float(v):+.{digits}f}%"
-    except (TypeError, ValueError):
-        return "—"
-
-
-def _pos_col(pos: str) -> str:
-    if pos.startswith("UYGUN "):
-        return "#3dd68c"
-    if pos.startswith("KOŞULLU") or pos.startswith("KOSULLU"):
-        return "#ffcc66"
-    return "#8b9bb4"
-
-
-def row_signal(r: Result) -> str:
-    base = r.product.get("base", "")
-    if base in live_signals:
-        return live_signals[base]
-    move_ok = bool(r.early.get("active") or r.early.get("breakout") or safe_float(r.early.get("pct")) >= 0.18)
-    vol_ok = safe_float(r.early.get("rvol")) >= RVOL_OK
-    pos = r.position
-    ok_pos = pos.startswith("UYGUN ") or pos.startswith("KOŞULLU") or pos.startswith("KOSULLU")
-    if move_ok and vol_ok and ok_pos:
-        if r.decision == "LONG":
-            return "AL"
-        if r.decision == "SHORT":
-            return "SAT"
-    return "-"
-
-
-def _draw_radar_frame(results: List[Result], market: Dict, t: float = 1.0) -> "Image.Image":
-    rows = results[:28]
-    w, header_h, row_h = 1180, 168, 36
-    h = header_h + 36 + row_h * max(len(rows), 1) + 28
-    img = Image.new("RGB", (w, h), "#070b10")
-    d = ImageDraw.Draw(img)
-    d.rounded_rectangle([10, 10, w - 10, h - 10], 22, outline="#1e2a3c", width=2)
-    title_f, small_f = _font(26), _font(13)
-    d.text((28, 22), f"CRYPTO JET RADAR  V{VERSION}  CANLI TABLO", font=title_f, fill="#e8eef7")
-    meta = (
-        f"BTC 24s {_pct(market.get('btc_change'))}   "
-        f"BTC 15m {_pct(market.get('btc_15m'))}   "
-        f"Rejim {market.get('regime')}   "
-        f"BTC.D {safe_float(market.get('dominance')):.2f}%   "
-        f"F&G {market.get('fng')} {market.get('fng_label')}"
-    )
-    d.text((28, 58), meta, font=small_f, fill="#9fb3c8")
-    al_n = sum(1 for r in rows if row_signal(r) == "AL")
-    sat_n = sum(1 for r in rows if row_signal(r) == "SAT")
-    d.text((28, 82), f"Alt/coin {len(results)}  AL {al_n} SAT {sat_n}  |  ALIM/SATIM=15m 3saat hacim   LONG/SHORT=MTF", font=small_f, fill="#6e7d93")
-
-    cols = [
-        (22, "SINYAL"), (96, "COIN"), (170, "GUC"), (230, "HACIM"),
-        (310, "rVOL"), (380, "15M"), (450, "ALIM"), (520, "SATIM"),
-        (600, "LONG %"), (760, "SHORT %"), (920, "vsBTC"), (1020, "4H"),
-    ]
-    y0 = 118
-    d.rectangle([16, y0, w - 16, y0 + 26], fill="#121a26")
-    for x, name in cols:
-        d.text((x, y0 + 5), name, font=small_f, fill="#9fb3c8")
-
-    for i, r in enumerate(rows):
-        y = 148 + i * row_h
-        sig = row_signal(r)
-        if sig == "AL":
-            bg = "#10261a"
-            sc = "#3dd68c"
-        elif sig == "SAT":
-            bg = "#2a1216"
-            sc = "#f07178"
-        else:
-            bg = "#101722" if i % 2 == 0 else "#0c121a"
-            sc = "#6e7d93"
-        d.rectangle([16, y, w - 16, y + row_h - 3], fill=bg)
-        chg24 = r.product.get("chg_24h", 0.0)
-        d15 = r.early.get("direction") or r.decision
-        p15 = safe_float(r.early.get("pct")) * (-1 if d15 == "SHORT" else 1)
-        st = live_px.get(f"{r.product['base']}-USD") or live_px.get(r.product["base"])
-        tick = 0.0
-        if st and st.get("px") and st.get("base"):
-            tick = (st["px"] - st["base"]) / st["base"] * 100
-        rvol = safe_float(r.early.get("rvol"), 0)
-        if rvol >= 2.0:
-            vol_txt, vol_c = "GUCLU", "#3dd68c"
-        elif rvol >= 1.4:
-            vol_txt, vol_c = "VAR", "#ffcc66"
-        else:
-            vol_txt, vol_c = "ZAYIF", "#6e7d93"
-        buy_p = safe_float(getattr(r, "buy_pct", 50), 50)
-        sell_p = safe_float(getattr(r, "sell_pct", 50), 50)
-        long_p = safe_float(getattr(r, "long_pct", 50), 50)
-        short_p = safe_float(getattr(r, "short_pct", 50), 50)
-        vals = [
-            (22, sig if sig in {"AL", "SAT"} else "-", sc),
-            (96, r.product["base"], "#e8eef7"),
-            (170, f"{r.score}", "#e8eef7"),
-            (230, vol_txt, vol_c),
-            (310, f"{rvol:.2f}x", vol_c),
-            (380, _pct(p15), "#3dd68c" if p15 >= 0 else "#f07178"),
-            (450, f"%{buy_p:.0f}", "#3dd68c"),
-            (520, f"%{sell_p:.0f}", "#f07178"),
-            (600, f"LONG %{long_p:.0f}", "#3dd68c" if long_p >= short_p else "#8b9bb4"),
-            (760, f"SHORT %{short_p:.0f}", "#f07178" if short_p > long_p else "#8b9bb4"),
-            (920, _pct(r.rel_btc), "#3dd68c" if r.rel_btc >= 0 else "#f07178"),
-            (1020, r.tf_bias.get("4H", "-")[:5], "#c5d0e0"),
-        ]
-        for x, txt, c in vals:
-            d.text((x, y + 8), str(txt), font=small_f, fill=c)
-    return img
-
-
-def make_radar_table(results: List[Result], market: Dict) -> Optional[bytes]:
-    if not HAS_VISUALS or not results:
-        return None
-    img = _draw_radar_frame(results, market, 1.0)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
-
-
-def push_live_table(chat_id, results: List[Result], market: Dict, force_new: bool = False):
-    global table_msg_id, table_chat_id, table_last_push
-    if not results or not chat_id:
+def send(cid, text: str):
+    if not cid and not DRY_RUN:
         return
-    png = make_radar_table(results, market)
-    if not png:
-        return
-    cap = (
-        f"<b>Canlı radar V{VERSION}</b> · {len(results)} coin · "
-        f"AL {sum(1 for r in results if row_signal(r)=='AL')} · "
-        f"SAT {sum(1 for r in results if row_signal(r)=='SAT')}"
-    )
-    if DRY_RUN:
-        open("/home/workdir/artifacts/radar_table.png", "wb").write(png)
-    if (not force_new) and table_msg_id and table_chat_id == chat_id:
-        if edit_photo(chat_id, table_msg_id, png, cap):
-            table_last_push = time.time()
-            return
-    mid = send_photo(chat_id, png, cap)
-    if mid:
-        table_msg_id = mid
-        table_chat_id = chat_id
-        table_last_push = time.time()
+    tg("sendMessage", {"chat_id": cid or 0, "text": text[:3900], "disable_web_page_preview": True})
 
 
-def caption_html(r: Result) -> str:
-    checks = "\n".join(("✅ " if ok else "❌ ") + html.escape(n) for n, ok in r.checks)
-    inv = fmt_price(r.invalidation)
-    return (
-        f"<b>{html.escape(r.product['base'])}</b>  {html.escape(r.position)}\n"
-        f"{html.escape(r.decision)} · {html.escape(r.level)} · <b>{r.score}</b>/1000 · güven %{r.confidence}\n"
-        f"{html.escape(fmt_price(r.price))} · 15m %{r.early.get('pct',0):.2f} · rVol {r.early.get('rvol',0):.2f}x · vsBTC {r.rel_btc:+.2f}%\n"
-        f"TF 15m {r.tf_bias['15M']} | 1H {r.tf_bias['1H']} | 2H {r.tf_bias['2H']} | 4H {r.tf_bias['4H']} | 1D {r.tf_bias['1D']}\n"
-        f"BTC 24s {r.market['btc_change']:+.2f}% · 15m {r.market['btc_15m']:+.2f}% · {html.escape(r.market['regime'])}\n"
-        f"D {r.market['dominance']:.1f}% · F&G {r.market['fng']} {html.escape(r.market['fng_label'])}\n"
-        f"İptal 4H {html.escape(inv)}\n\n{checks}"
-    )
-
-
-def should_alert(r: Result) -> bool:
-    if r.level == "NONE":
-        return False
-    key = (r.decision, r.level, r.position, r.score // 40)
-    now = time.time()
-    prev = alert_state.get(r.product["id"])
-    if prev and prev.get("key") == key and now - prev["time"] < ALERT_COOLDOWN:
-        return False
-    alert_state[r.product["id"]] = {"key": key, "time": now}
-    return True
-
-
-def push_visual(chat_id, r: Result):
-    cap = caption_html(r)
-    gif = make_alert_gif(r)
-    if gif:
-        send_animation(chat_id, gif, cap)
-    else:
-        send_message(chat_id, cap, html_mode=True)
-    chart = make_chart(r)
-    if chart:
-        send_photo(
-            chat_id, chart,
-            f"<b>{html.escape(r.product['base'])}</b> 15m · {html.escape(r.position)} · iptal {html.escape(fmt_price(r.invalidation))}",
-        )
-        if DRY_RUN:
-            open(f"/home/workdir/artifacts/{r.product['base']}_v17.png", "wb").write(chart)
-
-
-# ===================== Scan / komut =====================
-
-def market_scan(chat_id=None, send_alerts=False, only=None) -> List[Result]:
-    products = get_products()
-    if only:
-        want = {x.upper() for x in only}
-        products = [p for p in products if p["base"] in want] or [
-            {"id": f"{s}-USD", "base": s, "quote_vol": 0, "price": 0, "chg_24h": 0} for s in want
-        ]
-    if not products:
-        if chat_id:
-            send_message(chat_id, "Coin listesi yok.", html_mode=False)
-        return []
-    market = get_market_context()
-    results, strong = [], []
-    print(
-        f"Tarama {len(products)} | BTC {market['btc_change']:+.2f}% 15m {market['btc_15m']:+.2f}% | "
-        f"{market['regime']} | D {market['dominance']:.1f} | F&G {market['fng']}"
-    )
-    for i, p in enumerate(products, 1):
-        try:
-            r = analyze(p, market)
-            if not r:
-                continue
-            results.append(r)
-            if r.level != "NONE":
-                strong.append(r)
-            print(f"[{i:3d}/{len(products)}] {p['base']:<8} {r.decision:<6} {r.score:4d} {r.level:<8} {r.position}")
-            if chat_id and i in {1, 5, 10, 15, 20, 25}:
-                send_message(chat_id, f"Taranıyor {i}/{len(products)}…", html_mode=False)
-            time.sleep(0.03)
-        except Exception as e:
-            print("analiz", p.get("base"), e)
-    results.sort(key=lambda x: x.score, reverse=True)
-    strong.sort(key=lambda x: x.score, reverse=True)
-    global last_results, last_market
-    last_results = results
-    last_market = market
-    min_rank = LEVEL_RANK.get(AUTO_MIN_LEVEL, 2)
-    if chat_id and send_alerts:
-        for r in strong:
-            move_ok = bool(r.early.get("active") or r.early.get("breakout") or safe_float(r.early.get("pct")) >= 0.18)
-            vol_ok = safe_float(r.early.get("rvol")) >= RVOL_OK
-            side = "AL" if r.decision == "LONG" else "SAT" if r.decision == "SHORT" else None
-            if side and move_ok and vol_ok and r.position != "UYGUN DEĞİL" and should_alert(r):
-                send_al_sat(
-                    chat_id, side, r.product["base"], r.price,
-                    safe_float(r.early.get("pct")) * (1 if side == "AL" else -1),
-                    f"rVol {safe_float(r.early.get('rvol')):.2f}x",
-                    f"güç {r.score}  rVol {safe_float(r.early.get('rvol')):.2f}x",
-                )
-                push_visual(chat_id, r)
-            elif LEVEL_RANK.get(r.level, 0) >= min_rank and should_alert(r):
-                push_visual(chat_id, r)
-    if chat_id:
-        lines = [
-            f"<b>CRYPTO JET V{VERSION}</b>",
-            f"Coin {len(results)} · sinyal {len(strong)}",
-            f"BTC {market['btc_change']:+.2f}% · 15m {market['btc_15m']:+.2f}% · {html.escape(market['regime'])}",
-            f"D {market['dominance']:.1f}% · F&amp;G {market['fng']} {html.escape(market['fng_label'])}",
-            "",
-        ]
-        show = results[:15]
-        for r in show:
-            sig = row_signal(r)
-            p15 = safe_float(r.early.get("pct")) * (-1 if (r.early.get("direction") or r.decision) == "SHORT" else 1)
-            lines.append(
-                f"<code>{html.escape(r.product['base']):<6}</code> güç {r.score:>4}  "
-                f"rVol {safe_float(r.early.get('rvol')):.2f}x  15m {_pct(p15)}  "
-                f"24s {_pct(r.product.get('chg_24h'))}  {html.escape(sig if sig in {'AL','SAT'} else '')}"
-            )
-        send_message(chat_id, "\n".join(lines))
-        push_live_table(chat_id, results[:28], market, force_new=True)
-    return results
-
-
-def run_scan_job(chat_id: int, send_alerts: bool):
-    global last_scan_time, scan_busy
+def adv(path: str, params=None):
     try:
-        market_scan(chat_id, send_alerts)
-        last_scan_time = time.time()
+        r = session.get(CB + path, params=params or {}, timeout=12)
+        if r.status_code == 200:
+            return r.json()
     except Exception as e:
-        send_message(chat_id, f"Tarama hatası: {e}", html_mode=False)
-        print("scan job", e)
-    finally:
-        scan_busy = False
+        print("cb", e)
+    return None
 
 
-def start_scan(chat_id: int, send_alerts: bool = True) -> bool:
-    global scan_busy
-    with scan_lock:
-        if scan_busy:
-            send_message(chat_id, "Tarama zaten sürüyor, bitmesini bekle.", html_mode=False)
-            return False
-        scan_busy = True
-    threading.Thread(target=run_scan_job, args=(chat_id, send_alerts), daemon=True).start()
-    return True
-
-
-def handle_command(chat_id: int, text: str):
-    global active_chat_id, last_scan_time, live_chat_id, live_last
-    t = text.strip().lower()
-    print(f"KOMUT {chat_id}: {text}")
-    if t == "/start":
-        send_message(chat_id, f"""
-<b>CRYPTO JET V{VERSION}</b>
-
-15m erken hareket + 1H/4H/1D onay
-BTC · BTC.D · Fear&amp;Greed · göreli güç
-
-/jet otomatik tarama
-/live anlık fiyat (8sn, %0.15+)
-/now anlık tablo
-/liveoff
-/scan  /top  /btc  /status  /stop
-
-Tablo: güç + hacim. AL/SAT yalnız hareket ve hacim birlikteyse.
-Emir tavsiyesi değildir.
-""".strip())
-    elif t == "/jet":
-        active_chat_id = chat_id
-        send_message(chat_id, "Jet açık. İlk tarama arka planda başladı, 1-2 dk sürebilir.", html_mode=False)
-        start_scan(chat_id, True)
-    elif t == "/scan":
-        send_message(chat_id, "Tarama arka planda başladı.", html_mode=False)
-        start_scan(chat_id, True)
-    elif t == "/top":
-        send_message(chat_id, "Liste hazırlanıyor…", html_mode=False)
-        start_scan(chat_id, False)
-    elif t == "/btc":
-        m = get_market_context()
-        send_message(chat_id, f"""
-<b>MARKET</b>
-BTC {html.escape(fmt_price(m['btc_price']))}  24s {m['btc_change']:+.2f}%  15m {m['btc_15m']:+.2f}%
-Trend {html.escape(m['btc_trend'])} · 1D {html.escape(m['btc_1d_bias'])}
-Rejim {html.escape(m['regime'])}
-BTC.D {m['dominance']:.2f}%  {html.escape(m['dom_bias'])}
-Fear&amp;Greed {m['fng']}  {html.escape(m['fng_label'])}
-""".strip())
-    elif t == "/live":
-        live_chat_id = chat_id
-        live_px.clear()
-        send_message(chat_id, f"Canlı tablo açık. GIF yok. AL/SAT satırda işaretlenir. Tick {_pct(LIVE_MOVE*100)}.", html_mode=False)
-        live_last = 0.0
-        if last_results:
-            push_live_table(chat_id, last_results[:28], last_market or {}, force_new=True)
-        else:
-            start_scan(chat_id, False)
-        live_tick()
-    elif t == "/now":
-        old = live_chat_id
-        live_chat_id = chat_id
-        # force snapshot
-        lines = ["ANLIK"]
-        for pid in live_products()[:8]:
-            px = fetch_spot(pid)
-            if not px:
-                continue
-            st = live_px.get(pid)
-            sess = ((px - st["base"]) / st["base"] * 100) if st else 0.0
-            chg24 = ""
-            lines.append(f"{pid.replace('-USD',''):<6} {fmt_price(px)}  oturum {_pct(sess)}")
-        send_message(chat_id, "\n".join(lines), html_mode=False)
-        live_chat_id = old or chat_id
-    elif t == "/liveoff":
-        live_chat_id = None
-        send_message(chat_id, "Canlı takip kapandı.", html_mode=False)
-    elif t == "/status":
-        send_message(chat_id, f"V{VERSION} jet={'AÇIK' if active_chat_id else 'KAPALI'} live={'AÇIK' if live_chat_id else 'KAPALI'}\nCoin {len(products_cache) or len(get_products())}\nMin {AUTO_MIN_LEVEL}")
-    elif t == "/stop":
-        active_chat_id = None
-        live_chat_id = None
-        send_message(chat_id, "Durdu.")
-    elif t.startswith("/"):
-        send_message(chat_id, "/jet /live /now /liveoff /scan /top /btc /status /stop")
-
-
-def live_products() -> List[str]:
-    ids = list(LIVE_WATCH)
-    for p in products_cache[:8]:
-        pid = f"{p['base']}-USD"
-        if pid not in ids:
-            ids.append(pid)
-    return ids[:12]
-
-
-def fetch_spot(product_id: str) -> Optional[float]:
-    data = adv_get(f"/market/products/{product_id}")
+def spot(pid: str) -> Optional[float]:
+    data = adv(f"/market/products/{pid}")
     if isinstance(data, dict):
-        px = safe_float(data.get("price"))
+        px = safe(data.get("price"))
         return px if px > 0 else None
     return None
 
 
-def fetch_spot_full(product_id: str) -> Optional[Dict]:
-    data = adv_get(f"/market/products/{product_id}")
-    if not isinstance(data, dict):
-        return None
-    px = safe_float(data.get("price"))
-    if px <= 0:
-        return None
-    return {
-        "price": px,
-        "vol": safe_float(data.get("volume_24h")),
-        "chg24": safe_float(data.get("price_percentage_change_24h")),
+def candles(pid: str, gran: str = "FIFTEEN_MINUTE", n: int = 40) -> List[Dict]:
+    now = int(time.time())
+    data = adv(
+        f"/market/products/{pid}/candles",
+        {"start": str(now - n * 900), "end": str(now), "granularity": gran},
+    )
+    raw = data.get("candles") if isinstance(data, dict) else None
+    if not raw:
+        return []
+    out = []
+    for c in raw:
+        out.append({
+            "ts": int(safe(c.get("start"))),
+            "open": safe(c.get("open")),
+            "high": safe(c.get("high")),
+            "low": safe(c.get("low")),
+            "close": safe(c.get("close")),
+            "volume": safe(c.get("volume")),
+        })
+    out.sort(key=lambda x: x["ts"])
+    return out
+
+
+def rvol(cs: List[Dict], n: int = 16) -> float:
+    if len(cs) < 6:
+        return 1.0
+    last = cs[-1]["volume"]
+    base = [c["volume"] for c in cs[-n-1:-1] if c["volume"] > 0]
+    if not base:
+        return 1.0
+    avg = sum(base) / len(base)
+    return last / avg if avg > 0 else 1.0
+
+
+
+def okx_ready() -> bool:
+    return bool(OKX_KEY and OKX_SEC and OKX_PASS)
+
+
+def okx_sign(ts: str, method: str, path: str, body: str = "") -> str:
+    msg = f"{ts}{method}{path}{body}"
+    digest = hmac.new(OKX_SEC.encode(), msg.encode(), hashlib.sha256).digest()
+    return base64.b64encode(digest).decode()
+
+
+def okx_req(method: str, path: str, body=None):
+    if not okx_ready():
+        return {"code": "no-key"}
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+    raw = json.dumps(body) if body is not None else ""
+    headers = {
+        "OK-ACCESS-KEY": OKX_KEY,
+        "OK-ACCESS-SIGN": okx_sign(ts, method, path, raw),
+        "OK-ACCESS-TIMESTAMP": ts,
+        "OK-ACCESS-PASSPHRASE": OKX_PASS,
+        "Content-Type": "application/json",
     }
+    if OKX_DEMO:
+        headers["x-simulated-trading"] = "1"
+    try:
+        r = session.request(method, OKX_BASE + path, headers=headers, data=raw or None, timeout=15)
+        return r.json()
+    except Exception as e:
+        return {"code": "err", "msg": str(e)}
 
 
-def send_al_sat(chat_id, side: str, coin: str, price: float, move_pct: float, vol_txt: str, extra: str = ""):
-    if side == "AL":
-        head = "AL POZİSYON"
+def okx_inst(base: str) -> str:
+    return f"{base}-USDT"
+
+
+def okx_place(base: str, side: str, usdt: float) -> Dict:
+    """Spot market. side buy|sell. buy size = USDT, sell size = base qty caller must pass via usdt as qty if side sell? 
+    For buy: tgtCcy=quote_ccy sz=USDT
+    For sell: we sell all paper qty stored.
+    """
+    inst = okx_inst(base)
+    body = {
+        "instId": inst,
+        "tdMode": "cash",
+        "side": side,
+        "ordType": "market",
+    }
+    if side == "buy":
+        body["sz"] = str(round(usdt, 4))
+        body["tgtCcy"] = "quote_ccy"
     else:
-        head = "SAT POZİSYON"
-    text = (
-        f"{head}\n"
-        f"{coin}\n"
-        f"Fiyat {fmt_price(price)}\n"
-        f"Hareket {_pct(move_pct)}\n"
-        f"Hacim {vol_txt}\n"
-        f"{extra}"
-    ).strip()
-    send_message(chat_id, text, html_mode=False)
+        body["sz"] = str(usdt)
+        body["tgtCcy"] = "base_ccy"
+    res = okx_req("POST", "/api/v5/trade/order", body)
+    return res if isinstance(res, dict) else {"code": "bad"}
 
 
-def live_tick():
-    global live_last
-    if not live_chat_id:
-        return
-    now = time.time()
-    if now - live_last < LIVE_INTERVAL:
-        return
-    live_last = now
-    for pid in live_products():
-        info = fetch_spot_full(pid)
-        if not info:
-            continue
-        px, vol = info["price"], info["vol"]
-        st = live_px.get(pid)
-        if not st:
-            live_px[pid] = {"px": px, "t": now, "hi": px, "lo": px, "base": px, "vol": vol}
-            continue
-        last = st["px"]
-        chg = (px - last) / last if last else 0.0
-        sess = (px - st["base"]) / st["base"] if st["base"] else 0.0
-        vol_up = vol > st.get("vol", 0) * 1.002 if st.get("vol", 0) > 0 else False
-        st["px"], st["hi"], st["lo"], st["t"], st["vol"] = px, max(st["hi"], px), min(st["lo"], px), now, vol
-        if abs(chg) < LIVE_MOVE:
-            continue
-        prev_cd = live_trade_cd.get(pid, 0)
-        if now - prev_cd < LIVE_TRADE_CD:
-            continue
-        if not vol_up and abs(chg) < LIVE_MOVE * 2:
-            continue
-        side = "AL" if chg > 0 else "SAT"
-        live_trade_cd[pid] = now
-        live_signals[pid.replace("-USD", "")] = side
-        send_al_sat(
-            live_chat_id, side, pid.replace("-USD", ""), px, chg * 100,
-            "arttı (24s hacim yükseliyor)" if vol_up else "zayıf ama hareket büyük",
-            f"Oturum {_pct(sess*100)}  24s {_pct(info['chg24'])}",
-        )
-        if last_results and now - table_last_push >= 5:
-            push_live_table(live_chat_id, last_results[:28], last_market or {"btc_change": 0, "btc_15m": 0, "regime": "-", "dominance": 0, "fng": 0, "fng_label": "-"})
-    if last_results and now - table_last_push >= TABLE_REFRESH:
-        push_live_table(live_chat_id, last_results[:28], last_market or {})
 
 
-def automatic_scan():
-    global last_scan_time
-    if not active_chat_id or scan_busy:
+def okx_ok(res: Dict) -> bool:
+    return isinstance(res, dict) and str(res.get("code")) == "0"
+
+
+def okx_err(res: Dict) -> str:
+    if not isinstance(res, dict):
+        return "yanit yok"
+    if res.get("data"):
+        d = res["data"][0] if isinstance(res["data"], list) and res["data"] else res["data"]
+        if isinstance(d, dict):
+            return f"{d.get('sCode','')} {d.get('sMsg','')}"[:200]
+    return str(res.get("msg") or res.get("code"))[:200]
+
+
+def okx_usdt() -> float:
+    res = okx_req("GET", "/api/v5/account/balance?ccy=USDT")
+    if not okx_ok(res):
+        res = okx_req("GET", "/api/v5/asset/balances?ccy=USDT")
+    try:
+        rows = res.get("data") or []
+        if rows and isinstance(rows[0], dict):
+            det = rows[0].get("details") or rows
+            if isinstance(det, list) and det:
+                return safe(det[0].get("availBal") or det[0].get("availEq") or det[0].get("availBal"))
+            return safe(rows[0].get("availBal") or rows[0].get("bal"))
+    except Exception:
+        pass
+    return 0.0
+
+
+def trading_now() -> bool:
+    return bool(okx_ready() and trade_armed)
+
+
+def load_products() -> List[Dict]:
+    global products
+    out = []
+    data = adv("/market/products", {"product_type": "SPOT"})
+    rows = data.get("products") if isinstance(data, dict) else None
+    if rows:
+        for p in rows:
+            if p.get("quote_currency_id") != "USD":
+                continue
+            if p.get("trading_disabled"):
+                continue
+            base = p.get("base_currency_id") or ""
+            if base in {"USD", "USDT", "USDC", "EUR"}:
+                continue
+            vol = safe(p.get("volume_24h")) * safe(p.get("price"))
+            if vol < 2_000_000:
+                continue
+            out.append({
+                "id": p.get("product_id") or f"{base}-USD",
+                "base": base,
+                "chg": safe(p.get("price_percentage_change_24h")),
+                "price": safe(p.get("price")),
+            })
+        out.sort(key=lambda x: abs(x["chg"]), reverse=True)
+        products = out[:18]
+        return products
+    products = [{"id": x, "base": x.replace("-USD", ""), "chg": 0, "price": 0} for x in WATCH]
+    return products
+
+
+def net_pct(entry: float, now: float) -> float:
+    if entry <= 0:
+        return 0.0
+    return (now - entry) / entry * 100.0 - FEE_PCT
+
+
+def maybe_enter(p: Dict, cid: int):
+    base = p["base"]
+    if base in paper or len(paper) >= MAX_OPEN:
         return
-    now = time.time()
-    if now - last_scan_time < SCAN_INTERVAL:
+    if time.time() - cooldown.get(base, 0) < 20 * 60:
         return
-    last_scan_time = now
-    start_scan(active_chat_id, True)
+    cs = candles(p["id"])
+    if len(cs) < 20:
+        return
+    last = cs[-1]
+    move = (last["close"] - last["open"]) / last["open"] * 100 if last["open"] else 0
+    rv = rvol(cs)
+    body = abs(last["close"] - last["open"]) / max(last["high"] - last["low"], 1e-9)
+    if move < ENTRY_MOVE or rv < RVOL_MIN or body < 0.35:
+        return
+    px = spot(p["id"]) or last["close"]
+    qty = ORDER_USDT / px if px else 0
+    live_txt = "kagit (borsa emri yok)"
+    filled = True
+    if trading_now():
+        bal = okx_usdt()
+        if bal < ORDER_USDT:
+            send(cid, f"AL iptal {base}: USDT yetersiz ({bal:.2f} < {ORDER_USDT})")
+            return
+        res = okx_place(base, "buy", ORDER_USDT)
+        if not okx_ok(res):
+            send(cid, f"OKX AL hata {base}: {okx_err(res)}")
+            return
+        live_txt = f"OKX {'CANLI' if OKX_LIVE else 'DEMO'} emir tamam {ORDER_USDT} USDT"
+    paper[base] = {"id": p["id"], "entry": px, "t": time.time(), "peak": px, "peak_pct": 0.0, "qty": qty}
+    send(cid, (
+        f"AL  {base}\n"
+        f"Fiyat {px:.6g}\n"
+        f"15m +{move:.2f}%  rVol {rv:.2f}x\n"
+        f"Hedef +{TARGET_PCT:.1f}%   sure {MAX_HOLD_SEC//60} dk\n"
+        f"Stop -{STOP_PCT:.1f}%   trailing = zirve karin yarisi\n"
+        f"Komisyon tahmini %{FEE_PCT:.2f}\n"
+        f"{live_txt}"
+    ))
+
+
+def manage(cid: int):
+    dead = []
+    for base, pos in list(paper.items()):
+        px = spot(pos["id"])
+        if not px:
+            continue
+        if px > pos["peak"]:
+            pos["peak"] = px
+            pos["peak_pct"] = net_pct(pos["entry"], px)
+        pnl = net_pct(pos["entry"], px)
+        age = time.time() - pos["t"]
+        reason = None
+        if pnl >= TARGET_PCT:
+            reason = f"hedef +{TARGET_PCT:.1f}%"
+        elif pnl <= -STOP_PCT:
+            reason = f"stop -{STOP_PCT:.1f}%"
+        elif pos["peak_pct"] >= 0.8 and pnl <= pos["peak_pct"] * 0.5:
+            reason = f"trailing (zirve %{pos['peak_pct']:.2f} -> simdi %{pnl:.2f})"
+        elif age >= MAX_HOLD_SEC:
+            reason = f"sure doldu {MAX_HOLD_SEC//60} dk  pnl %{pnl:.2f}"
+        if not reason:
+            continue
+        dead.append(base)
+        cooldown[base] = time.time()
+        live_txt = "kagit"
+        if trading_now() and pos.get("qty"):
+            res = okx_place(base, "sell", pos["qty"])
+            live_txt = ("OKX SAT tamam" if okx_ok(res) else f"OKX SAT hata {okx_err(res)}")
+        send(cid, (
+            f"SAT  {base}\n"
+            f"Giris {pos['entry']:.6g}  cikis {px:.6g}\n"
+            f"Net %{pnl:.2f}  (komisyon dusuldu)\n"
+            f"Neden: {reason}\n"
+            f"{live_txt}"
+        ))
+    for b in dead:
+        paper.pop(b, None)
+
+
+def scan(cid: int):
+    global last_scan
+    last_scan = time.time()
+    if not products:
+        load_products()
+    manage(cid)
+    btc = spot("BTC-USD")
+    send(cid, (
+        f"SCALP JET V{VERSION}\n"
+        f"BTC {btc if btc else '-'}\n"
+        f"Hedef +{TARGET_PCT:.0f}% / {MAX_HOLD_SEC//60} dk\n"
+        f"Acik kagit {len(paper)}/{MAX_OPEN}\n"
+        f"{', '.join(paper.keys()) or '-'}"
+    ))
+    for p in products[:12]:
+        try:
+            maybe_enter(p, cid)
+        except Exception as e:
+            print("enter", p.get("base"), e)
+        time.sleep(0.15)
+
+
+def handle(cid: int, text: str):
+    global chat_id, trade_armed
+    t = (text or "").strip().lower()
+    if t in {"/start", "/help"}:
+        send(cid, (
+            f"SCALP JET V{VERSION}\n\n"
+            "Video kurali (sinyal + kagit):\n"
+            f"- 15m yukselis >= %{ENTRY_MOVE} ve hacim\n"
+            f"- AL bildir\n"
+            f"- +%{TARGET_PCT:.0f} olursa SAT\n"
+            "- zirveden donunce karin yarısında SAT\n"
+            f"- {MAX_HOLD_SEC//60} dk dolunca SAT\n\n"
+            "/on  taramayi ac\n"
+            "/off kapat\n"
+            "/now bir tarama\n"
+            "/pos acik kagitlar\n\n"
+            "OKX: demo varsayilan. Canli icin OKX_LIVE=1\nKey'leri sohbete yazma, ortam degiskeni kullan."
+        ))
+    elif t == "/on":
+        chat_id = cid
+        load_products()
+        send(cid, "Tarama acik.")
+        scan(cid)
+    elif t == "/off":
+        chat_id = None
+        send(cid, "Kapandi.")
+    elif t == "/now":
+        load_products()
+        scan(cid)
+    elif t == "/okx":
+        if not okx_ready():
+            send(cid, "OKX key yok. Ortam: OKX_API_KEY OKX_SECRET OKX_PASSPHRASE")
+        else:
+            send(cid, f"OKX bagli\nmod {'CANLI' if OKX_LIVE else 'DEMO'}\nemir {'ACIK' if trade_armed else 'KAPALI'}\nUSDT ~{okx_usdt():.2f}\nislem {ORDER_USDT} USDT")
+    elif t == "/tradeon":
+        if not okx_ready():
+            send(cid, "Once key ortamina yaz.")
+        else:
+            trade_armed = True
+            send(cid, f"Borsa emri ACIK ({'CANLI' if OKX_LIVE else 'DEMO'}). Her AL ~{ORDER_USDT} USDT. /tradeoff ile kapat.")
+    elif t == "/tradeoff":
+        trade_armed = False
+        send(cid, "Borsa emri kapandi. Sadece sinyal.")
+    elif t == "/pos":
+        if not paper:
+            send(cid, "Acik kagit yok.")
+            return
+        lines = ["KAGIT"]
+        for b, pos in paper.items():
+            px = spot(pos["id"]) or pos["entry"]
+            lines.append(f"{b}  giris {pos['entry']:.6g}  simdi {px:.6g}  net %{net_pct(pos['entry'], px):.2f}")
+        send(cid, "\n".join(lines))
+    else:
+        send(cid, "/on /off /now /pos /start")
 
 
 def main():
-    print(f"CRYPTO JET V{VERSION}")
-    if TOKEN:
-        wr = session.get(f"{TELEGRAM_API}/deleteWebhook", params={"drop_pending_updates": False}, timeout=15)
-        print("webhook temizle:", wr.status_code, wr.text[:120])
-        me = session.get(f"{TELEGRAM_API}/getMe", timeout=15)
-        print("bot:", me.text[:200])
+    print(f"SCALP JET V{VERSION}")
     if DRY_RUN:
-        rs = market_scan(chat_id=1, send_alerts=True, only=["BTC", "ETH", "SOL", "XRP", "DOGE"])
-        for r in rs:
-            if r.level != "NONE":
-                push_visual(1, r)
+        load_products()
+        print("urun", len(products), [p["base"] for p in products[:8]])
+        scan(0)
         return
     offset = 0
     while True:
         try:
-            r = session.get(f"{TELEGRAM_API}/getUpdates", params={"offset": offset, "timeout": 10}, timeout=15)
-            if r.status_code != 200:
-                time.sleep(5)
-                continue
-            data = r.json()
-            if not data.get("ok"):
-                time.sleep(5)
-                continue
-            for upd in data.get("result", []):
-                offset = upd["update_id"] + 1
-                msg = upd.get("message") or {}
-                if msg.get("text"):
-                    handle_command(msg["chat"]["id"], msg["text"])
-            automatic_scan()
-            live_tick()
+            r = session.get(f"{TG}/getUpdates", params={"offset": offset, "timeout": 10}, timeout=15)
+            if r.status_code == 200:
+                data = r.json()
+                for u in data.get("result", []):
+                    offset = u["update_id"] + 1
+                    msg = u.get("message") or {}
+                    if msg.get("text"):
+                        handle(msg["chat"]["id"], msg["text"])
+            if chat_id and time.time() - last_scan >= SCAN_SEC:
+                scan(chat_id)
             time.sleep(1)
         except KeyboardInterrupt:
             break
         except Exception as e:
             print("loop", e)
-            time.sleep(5)
+            time.sleep(4)
 
 
 if __name__ == "__main__":
