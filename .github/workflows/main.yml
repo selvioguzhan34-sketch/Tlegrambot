@@ -1,1 +1,22 @@
-.github/workflows/cryptojet.yml
+name: Crypto Jet Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Python'u kur
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Requests'i kur
+        run: pip install requests
+
+      - name: Crypto Jet'i çalıştır
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: python bot.py
