@@ -13,14 +13,21 @@ import os
 import time
 import math
 import html
+import threading
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 
 import requests
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from PIL import Image, ImageDraw, ImageFont
+
+HAS_VISUALS = True
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from PIL import Image, ImageDraw, ImageFont
+except Exception as e:
+    HAS_VISUALS = False
+    print("Gorsel kutuphane yok, sadece metin:", e)
 
 VERSION = "18.0"
 
@@ -45,7 +52,7 @@ if COINGECKO_KEY:
 SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "180"))
 PRODUCT_REFRESH = 1800
 ALERT_COOLDOWN = 1800
-MAX_SCAN_COINS = int(os.getenv("MAX_SCAN_COINS", "55"))
+MAX_SCAN_COINS = int(os.getenv("MAX_SCAN_COINS", "25"))
 MIN_QUOTE_VOLUME_USD = float(os.getenv("MIN_QUOTE_VOLUME_USD", "2500000"))
 AUTO_MIN_LEVEL = os.getenv("AUTO_MIN_LEVEL", "ALARM")
 
@@ -115,8 +122,9 @@ def _post_tg(method: str, data=None, files=None) -> bool:
     try:
         r = session.post(f"{TELEGRAM_API}/{method}", data=data, files=files, timeout=30)
         if r.status_code != 200:
-            print("TG", method, r.status_code, r.text[:160])
-        return r.status_code == 200
+            print("TG", method, r.status_code, r.text[:300])
+            return False
+        return True
     except Exception as e:
         print("TG hata:", e)
         return False
@@ -163,6 +171,10 @@ def send_animation(chat_id, gif: bytes, caption: str) -> bool:
 # ===================== Data (CoinGecko ana, Coinbase yedek) =====================
 
 _cg_last = 0.0
+USE_CG = True
+_cg_strikes = 0
+scan_busy = False
+scan_lock = threading.Lock()
 SKIP_SYM = {"USD", "USDC", "USDT", "DAI", "EUR", "GBP", "PYUSD", "FDUSD", "TUSD", "USDE", "USDS"}
 STABLE_IDS = {"tether", "usd-coin", "binance-usd", "dai", "first-digital-usd", "true-usd", "ethena-usde"}
 GECKO_ALIAS = {
@@ -174,24 +186,30 @@ GECKO_ALIAS = {
 
 
 def cg_get(path: str, params=None):
-    global _cg_last
+    global _cg_last, USE_CG, _cg_strikes
+    if not USE_CG:
+        return None
     url = COINGECKO_API + path
-    for attempt in range(4):
+    for attempt in range(2):
         wait = CG_SLEEP - (time.time() - _cg_last)
         if wait > 0:
             time.sleep(wait)
         try:
-            r = session.get(url, params=params, timeout=18)
+            r = session.get(url, params=params, timeout=12)
             _cg_last = time.time()
             if r.status_code == 200:
+                _cg_strikes = 0
                 return r.json()
             if r.status_code == 429:
-                time.sleep(8 + attempt * 4)
-                continue
+                _cg_strikes += 1
+                print("CoinGecko 429 — Coinbase yedeğe geçiliyor")
+                if _cg_strikes >= 2:
+                    USE_CG = False
+                return None
             print(f"CG {r.status_code} {path}: {r.text[:120]}")
         except Exception as e:
             print("CG", e)
-            time.sleep(2)
+            time.sleep(1)
     return None
 
 
@@ -916,6 +934,8 @@ def _font(size: int):
 
 
 def make_chart(r: Result) -> Optional[bytes]:
+    if not HAS_VISUALS:
+        return None
     c = r.c15[-48:] if len(r.c15) >= 20 else r.c1h[-60:]
     if len(c) < 12:
         return None
@@ -960,7 +980,9 @@ def make_chart(r: Result) -> Optional[bytes]:
     return buf.getvalue()
 
 
-def make_alert_gif(r: Result) -> bytes:
+def make_alert_gif(r: Result) -> Optional[bytes]:
+    if not HAS_VISUALS:
+        return None
     w, h = 720, 380
     pos_col = "#3dd68c" if r.position.startswith("UYGUN ") else "#ffcc66" if r.position.startswith("KOŞULLU") else "#f07178"
     frames = []
@@ -1013,7 +1035,12 @@ def should_alert(r: Result) -> bool:
 
 
 def push_visual(chat_id, r: Result):
-    send_animation(chat_id, make_alert_gif(r), caption_html(r))
+    cap = caption_html(r)
+    gif = make_alert_gif(r)
+    if gif:
+        send_animation(chat_id, gif, cap)
+    else:
+        send_message(chat_id, cap, html_mode=True)
     chart = make_chart(r)
     if chart:
         send_photo(
@@ -1022,7 +1049,6 @@ def push_visual(chat_id, r: Result):
         )
         if DRY_RUN:
             open(f"/home/workdir/artifacts/{r.product['base']}_v17.png", "wb").write(chart)
-            open(f"/home/workdir/artifacts/{r.product['base']}_v17.gif", "wb").write(make_alert_gif(r))
 
 
 # ===================== Scan / komut =====================
@@ -1053,6 +1079,8 @@ def market_scan(chat_id=None, send_alerts=False, only=None) -> List[Result]:
             if r.level != "NONE":
                 strong.append(r)
             print(f"[{i:3d}/{len(products)}] {p['base']:<8} {r.decision:<6} {r.score:4d} {r.level:<8} {r.position}")
+            if chat_id and i in {1, 5, 10, 15, 20, 25}:
+                send_message(chat_id, f"Taranıyor {i}/{len(products)}…", html_mode=False)
             time.sleep(0.03)
         except Exception as e:
             print("analiz", p.get("base"), e)
@@ -1077,9 +1105,33 @@ def market_scan(chat_id=None, send_alerts=False, only=None) -> List[Result]:
     return results
 
 
+def run_scan_job(chat_id: int, send_alerts: bool):
+    global last_scan_time, scan_busy
+    try:
+        market_scan(chat_id, send_alerts)
+        last_scan_time = time.time()
+    except Exception as e:
+        send_message(chat_id, f"Tarama hatası: {e}", html_mode=False)
+        print("scan job", e)
+    finally:
+        scan_busy = False
+
+
+def start_scan(chat_id: int, send_alerts: bool = True) -> bool:
+    global scan_busy
+    with scan_lock:
+        if scan_busy:
+            send_message(chat_id, "Tarama zaten sürüyor, bitmesini bekle.", html_mode=False)
+            return False
+        scan_busy = True
+    threading.Thread(target=run_scan_job, args=(chat_id, send_alerts), daemon=True).start()
+    return True
+
+
 def handle_command(chat_id: int, text: str):
     global active_chat_id, last_scan_time
     t = text.strip().lower()
+    print(f"KOMUT {chat_id}: {text}")
     if t == "/start":
         send_message(chat_id, f"""
 <b>CRYPTO JET V{VERSION}</b>
@@ -1095,22 +1147,14 @@ Emir tavsiyesi değildir.
 """.strip())
     elif t == "/jet":
         active_chat_id = chat_id
-        send_message(chat_id, "V17 açık. Tarama başlıyor.")
-        market_scan(chat_id, True)
-        last_scan_time = time.time()
+        send_message(chat_id, "Jet açık. İlk tarama arka planda başladı, 1-2 dk sürebilir.", html_mode=False)
+        start_scan(chat_id, True)
     elif t == "/scan":
-        send_message(chat_id, "Tarama başladı.")
-        market_scan(chat_id, True)
-        last_scan_time = time.time()
+        send_message(chat_id, "Tarama arka planda başladı.", html_mode=False)
+        start_scan(chat_id, True)
     elif t == "/top":
-        results = market_scan(None, False)
-        if not results:
-            send_message(chat_id, "Sonuç yok.", html_mode=False)
-            return
-        lines = [f"<b>TOP V{VERSION}</b>"]
-        for r in results[:20]:
-            lines.append(f"{html.escape(r.product['base']):<6} {r.score:4d}  {html.escape(r.position)}")
-        send_message(chat_id, "\n".join(lines))
+        send_message(chat_id, "Liste hazırlanıyor…", html_mode=False)
+        start_scan(chat_id, False)
     elif t == "/btc":
         m = get_market_context()
         send_message(chat_id, f"""
@@ -1132,21 +1176,22 @@ Fear&amp;Greed {m['fng']}  {html.escape(m['fng_label'])}
 
 def automatic_scan():
     global last_scan_time
-    if not active_chat_id:
+    if not active_chat_id or scan_busy:
         return
     now = time.time()
     if now - last_scan_time < SCAN_INTERVAL:
         return
     last_scan_time = now
-    results = market_scan(None, False)
-    min_rank = LEVEL_RANK.get(AUTO_MIN_LEVEL, 2)
-    for r in results:
-        if LEVEL_RANK.get(r.level, 0) >= min_rank and should_alert(r):
-            push_visual(active_chat_id, r)
+    start_scan(active_chat_id, True)
 
 
 def main():
     print(f"CRYPTO JET V{VERSION}")
+    if TOKEN:
+        wr = session.get(f"{TELEGRAM_API}/deleteWebhook", params={"drop_pending_updates": False}, timeout=15)
+        print("webhook temizle:", wr.status_code, wr.text[:120])
+        me = session.get(f"{TELEGRAM_API}/getMe", timeout=15)
+        print("bot:", me.text[:200])
     if DRY_RUN:
         rs = market_scan(chat_id=1, send_alerts=True, only=["BTC", "ETH", "SOL", "XRP", "DOGE"])
         for r in rs:
