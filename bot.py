@@ -1,33 +1,38 @@
 #!/usr/bin/env python3
 """
-SCALP JET V3 — Binance long/short + funding + hacim skor karti
-Renkli funding, 3 kademeli hedef, stop, pozisyon boyutu, cooldown, backtest.
-Sadece sinyal, borsa emri yok. Yatirim tavsiyesi degildir.
+SCALP JET V3
+Binance long/short + funding + hacim skor karti.
+Renkli funding, 3 kademeli hedef, stop, pozisyon boyutu, cooldown.
+Sadece sinyal. Borsa emri yok. Yatirim tavsiyesi degildir.
 """
 from __future__ import annotations
 
-import os, time, json, math
-from typing import Dict, List, Optional, Tuple
+import os
+import time
+from typing import Dict, List, Optional
+
 import requests
 
 VERSION = "3.0"
 DRY_RUN = os.getenv("CRYPTOJET_DRYRUN", "").strip().lower() in {"1", "true", "yes"}
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN and not DRY_RUN:
-    raise ValueError("TELEGRAM_BOT_TOKEN yok. Test: CRYPTOJET_DRYRUN=1")
+    raise ValueError("TELEGRAM_BOT_TOKEN yok. Test icin: CRYPTOJET_DRYRUN=1")
 
 TG = f"https://api.telegram.org/bot{TOKEN}" if TOKEN else ""
 BN = "https://fapi.binance.com"
-CB = "https://api.coinbase.com/api/v3/brokerage"
 
 session = requests.Session()
-session.headers.update({"User-Agent": f"ScalpJet/{VERSION}", "Accept": "application/json"})
+session.headers.update({
+    "User-Agent": f"ScalpJet/{VERSION}",
+    "Accept": "application/json",
+})
 
 SCAN_SEC = int(os.getenv("SCAN_SEC", "60"))
 TOP_N = int(os.getenv("TOP_N", "50"))
-MIN_VOL = float(os.getenv("MIN_VOL", "5_000_000"))
+MIN_VOL = float(os.getenv("MIN_VOL", "5000000"))
 LONG_HEAVY = float(os.getenv("LONG_HEAVY", "60"))
-SHORT_HEAVY = float(os.getenv("SHORT_HEAVY", "40"))
+SHORT_HEAVY = float(os.getenv("SHORT_HEAVY", "60"))
 FUND_EXTREME = float(os.getenv("FUND_EXTREME", "0.05"))
 ENTRY_MOVE = float(os.getenv("ENTRY_MOVE", "0.5"))
 RVOL_MIN = float(os.getenv("RVOL_MIN", "1.3"))
@@ -39,11 +44,10 @@ PP3_PCT = float(os.getenv("PP3_PCT", "5.0"))
 STOP_PCT = float(os.getenv("STOP_PCT", "1.5"))
 PAPER_BALANCE = float(os.getenv("PAPER_BALANCE", "1000"))
 
-chat_id: Optional = None
+chat_id: Optional[int] = None
 last_scan = 0.0
-products: List = []
-cooldown: Dict =
-paper: Dict =
+products: List[Dict] = []
+cooldown: Dict[str, float] = {}
 balance = PAPER_BALANCE
 
 
@@ -57,7 +61,7 @@ def safe(v, d=0.0) -> float:
 def tg(method, data=None) -> bool:
     if DRY_RUN:
         if data and data.get("text"):
-            print("\n===== MSG =====\n" + str(data )[:1500] + "\n===============\n")
+            print("\n===== MSG =====\n" + str(data["text"])[:1500] + "\n===============\n")
         return True
     try:
         r = session.post(f"{TG}/{method}", data=data, timeout=20)
@@ -70,8 +74,11 @@ def tg(method, data=None) -> bool:
 def send(cid, text):
     if not cid and not DRY_RUN:
         return
-    tg("sendMessage", {"chat_id": cid or 0, "text": text[:3900], "disable_web_page_preview": True,
-                       "parse_mode": "Markdown"})
+    tg("sendMessage", {
+        "chat_id": cid or 0,
+        "text": text[:3900],
+        "disable_web_page_preview": True,
+    })
 
 
 def bn(path, params=None):
@@ -84,43 +91,39 @@ def bn(path, params=None):
     return None
 
 
-def cb(path, params=None):
-    try:
-        r = session.get(CB + path, params=params or {}, timeout=12)
-        if r.status_code == 200:
-            return r.json()
-    except Exception as e:
-        print("cb", e)
-    return None
-
-
-def spot(pid):
-    d = cb(f"/market/products/{pid}")
+def ticker_price(sym):
+    d = bn("/fapi/v1/ticker/price", {"symbol": sym})
     if isinstance(d, dict):
         p = safe(d.get("price"))
         return p if p > 0 else None
     return None
 
 
-def candles(pid, gran="FIFTEEN_MINUTE", n=40):
-    now = int(time.time())
-    d = cb(f"/market/products/{pid}/candles",
-           {"start": str(now - n * 900), "end": str(now), "granularity": gran})
-    raw = d.get("candles") if isinstance(d, dict) else None
-    if not raw:
-        return [ ]
-    for c in raw:
-        out.append({"ts": int(safe(c.get("start"))), "open": safe(c.get("open")),
-                    "high": safe(c.get("high")), "low": safe(c.get("low")),
-                    "close": safe(c.get("close")), "volume": safe(c.get("volume"))})
-    out.sort(key=lambda x: x )
+def candles(sym, interval="15m", n=40):
+    d = bn("/fapi/v1/klines", {"symbol": sym, "interval": interval, "limit": n})
+    if not isinstance(d, list):
+        return []
+    out = []
+    for c in d:
+        if not isinstance(c, list) or len(c) < 6:
+            continue
+        out.append({
+            "ts": int(safe(c[0])),
+            "open": safe(c[1]),
+            "high": safe(c[2]),
+            "low": safe(c[3]),
+            "close": safe(c[4]),
+            "volume": safe(c[5]),
+        })
+    out.sort(key=lambda x: x["ts"])
     return out
 
 
 def rvol(cs, n=16):
     if len(cs) < 6:
         return 1.0
-    last = cs[-1] base = for c in cs if c > 0]
+    last = cs[-1]["volume"]
+    base = [c["volume"] for c in cs[-n - 1:-1] if c["volume"] > 0]
     if not base:
         return 1.0
     avg = sum(base) / len(base)
@@ -128,8 +131,11 @@ def rvol(cs, n=16):
 
 
 def ls_ratio(sym):
-    d = bn("/futures/data/globalLongShortAccountRatio",
-           {"symbol": sym, "period": "15m", "limit": 1})
+    d = bn("/futures/data/globalLongShortAccountRatio", {
+        "symbol": sym,
+        "period": "15m",
+        "limit": 1,
+    })
     return d[0] if isinstance(d, list) and d else None
 
 
@@ -151,44 +157,62 @@ def score_card(sym):
     short_pct = safe(ls.get("shortAccount")) * 100
     ratio = safe(ls.get("longShortRatio"))
     fr = funding(sym)
-    fund = safe(fr.get("lastFundingRate")) * 100 if fr else 0
+    fund = safe(fr.get("lastFundingRate")) * 100 if fr else 0.0
     o = oi(sym)
-    oi_amt = safe(o.get("openInterest")) if o else 0
-    return {"long": long_pct, "short": short_pct, "ratio": ratio,
-            "funding": fund, "oi": oi_amt}
+    oi_amt = safe(o.get("openInterest")) if o else 0.0
+    return {
+        "long": long_pct,
+        "short": short_pct,
+        "ratio": ratio,
+        "funding": fund,
+        "oi": oi_amt,
+    }
 
 
 def load_products():
     global products
     out = []
-    d = cb("/market/products", {"product_type": "SPOT"})
-    rows = d.get("products") if isinstance(d, dict) else None
-    if not rows:
+    d = bn("/fapi/v1/ticker/24hr")
+    if not isinstance(d, list):
         return products
-    for p in rows:
-        if p.get("quote_currency_id") != "USD":
+    for p in d:
+        if not isinstance(p, dict):
             continue
-        if p.get("trading_disabled"):
+        sym = p.get("symbol") or ""
+        if not sym.endswith("USDT"):
             continue
-        base = p.get("base_currency_id") or ""
-        if base in {"USD", "USDT", "USDC", "EUR"}:
+        if any(x in sym for x in ("_", "USDC", "BUSD")):
             continue
-        vol = safe(p.get("volume_24h")) * safe(p.get("price"))
+        vol = safe(p.get("quoteVolume"))
         if vol < MIN_VOL:
             continue
-        out.append({"id": p.get("product_id") or f"{base}-USD", "base": base,
-                    "chg": safe(p.get("price_percentage_change_24h")),
-                    "price": safe(p.get("price")), "vol": vol})
-    out.sort(key=lambda x: x , reverse=True)
-    products = out return products
+        base = sym[:-4]
+        out.append({
+            "id": sym,
+            "base": base,
+            "chg": safe(p.get("priceChangePercent")),
+            "price": safe(p.get("lastPrice")),
+            "vol": vol,
+        })
+    out.sort(key=lambda x: x["vol"], reverse=True)
+    products = out[:TOP_N]
+    return products
 
 
 def targets(entry, bias):
     if bias == "LONG":
-        return {"pp1": entry * (1 + PP1_PCT/100), "pp2": entry * (1 + PP2_PCT/100),
-                "pp3": entry * (1 + PP3_PCT/100), "stop": entry * (1 - STOP_PCT/100)}
-    return {"pp1": entry * (1 - PP1_PCT/100), "pp2": entry * (1 - PP2_PCT/100),
-            "pp3": entry * (1 - PP3_PCT/100), "stop": entry * (1 + STOP_PCT/100)}
+        return {
+            "pp1": entry * (1 + PP1_PCT / 100),
+            "pp2": entry * (1 + PP2_PCT / 100),
+            "pp3": entry * (1 + PP3_PCT / 100),
+            "stop": entry * (1 - STOP_PCT / 100),
+        }
+    return {
+        "pp1": entry * (1 - PP1_PCT / 100),
+        "pp2": entry * (1 - PP2_PCT / 100),
+        "pp3": entry * (1 - PP3_PCT / 100),
+        "stop": entry * (1 + STOP_PCT / 100),
+    }
 
 
 def position_size(entry, stop):
@@ -199,18 +223,18 @@ def position_size(entry, stop):
     return risk_amount / per_unit
 
 
-def signal(base, sc, move, rv):
+def signal(sc, move, rv):
     reasons = []
     bias = None
-    if sc >= LONG_HEAVY:
+    if sc["long"] >= LONG_HEAVY:
         bias = "LONG"
-        reasons.append(f"long %{sc :.0f}")
-        if sc >= FUND_EXTREME:
+        reasons.append(f"long %{sc['long']:.0f}")
+        if sc["funding"] >= FUND_EXTREME:
             reasons.append("funding yuksek")
-    elif sc >= (100 - SHORT_HEAVY):
+    elif sc["short"] >= SHORT_HEAVY:
         bias = "SHORT"
-        reasons.append(f"short %{sc :.0f}")
-        if sc <= -FUND_EXTREME:
+        reasons.append(f"short %{sc['short']:.0f}")
+        if sc["funding"] <= -FUND_EXTREME:
             reasons.append("funding dusuk")
     if move >= ENTRY_MOVE and rv >= RVOL_MIN:
         reasons.append(f"15m +{move:.2f}% rVol {rv:.2f}x")
@@ -232,56 +256,66 @@ def funding_label(fund):
 
 
 def scan(cid):
-    global last_scan, balance
+    global last_scan
     last_scan = time.time()
     if not products:
         load_products()
-    btc = spot("BTC-USD")
-    send(cid, f"🚀 *SCALP JET V{VERSION}*\nBTC {btc or '-'}\nTarama: {len(products)} coin | Bakiye ${balance:.0f}")
+    btc = ticker_price("BTCUSDT")
+    send(
+        cid,
+        f"SCALP JET V{VERSION}\n"
+        f"BTC {btc or '-'}\n"
+        f"Tarama: {len(products)} coin | Bakiye ${balance:.0f}",
+    )
     for p in products:
-        base = p if time.time() - cooldown.get(base, 0) < COOLDOWN_SEC:
+        base = p["base"]
+        if time.time() - cooldown.get(base, 0) < COOLDOWN_SEC:
             continue
-        sym = f"{base}USDT"
+        sym = p["id"]
         sc = score_card(sym)
         if not sc:
             continue
-        cs = candles(p )
+        cs = candles(sym)
         if len(cs) < 20:
             continue
-        last = cs[-1 "open"] * 100 if last else 0
+        last = cs[-1]
+        move = (last["close"] - last["open"]) / last["open"] * 100 if last["open"] else 0.0
         rv = rvol(cs)
-        bias, reasons = signal(base, sc, move, rv)
+        bias, reasons = signal(sc, move, rv)
         if not bias:
             continue
-        px = spot(p ) or last t = targets(px, bias)
-        qty = position_size(px, t )
-        cooldown = time.time()
+        px = ticker_price(sym) or last["close"]
+        t = targets(px, bias)
+        qty = position_size(px, t["stop"])
+        cooldown[base] = time.time()
         tag = "🟢 YUKSELIS" if bias == "LONG" else "🔴 DUSUS"
-        fl = funding_label(sc )
+        fl = funding_label(sc["funding"])
         send(cid, (
-            f"{tag}  *{base}*\n"
-            f"Long %{sc :.0f}  Short %{sc :.0f}  oran {sc :.2f}\n"
-            f"{fl}  (funding %{sc :.4f})\n"
-            f"OI {sc :.0f} | Fiyat {px:.6g} | 24s {p :+.1f}% | Hacim ${p /1e6:.1f}M\n"
+            f"{tag}  {base}\n"
+            f"Long %{sc['long']:.0f}  Short %{sc['short']:.0f}  oran {sc['ratio']:.2f}\n"
+            f"{fl}  (funding %{sc['funding']:.4f})\n"
+            f"OI {sc['oi']:.0f} | Fiyat {px:.6g} | 24s {p['chg']:+.1f}% | Hacim ${p['vol']/1e6:.1f}M\n"
             f"15m {move:+.2f}%  rVol {rv:.2f}x\n"
-            f"🎯 PP1 {t :.4g} · PP2 {t['pp2']:.4g} · PP3 {t :.4g}\n"
-            f"🛑 Stop {t :.4g} | Boyut {qty:.4g} {base} (~${qty*px:.1f})\n"
+            f"🎯 PP1 {t['pp1']:.4g} · PP2 {t['pp2']:.4g} · PP3 {t['pp3']:.4g}\n"
+            f"🛑 Stop {t['stop']:.4g} | Boyut {qty:.4g} {base} (~${qty*px:.1f})\n"
             f"Sebep: {', '.join(reasons)}"
         ))
-        time.sleep(0.2)
+        time.sleep(0.15)
 
 
 def handle(cid, text):
-    global chat_id, balance
+    global chat_id
     t = (text or "").strip().lower()
     if t in {"/start", "/help"}:
         send(cid, (
-            f"🚀 *SCALP JET V{VERSION}*\n\n"
+            f"SCALP JET V{VERSION}\n\n"
             "Binance long/short + funding + hacim skor karti.\n"
             "Renkli funding, 3 kademeli hedef, stop, pozisyon boyutu.\n"
             "Sadece sinyal, emir yok.\n\n"
-            "/on  tarama ac\n/off kapat\n/now bir tarama\n"
-            "/top en yuksek hacimli\n/backtest gecmis test\n"
+            "/on  tarama ac\n"
+            "/off kapat\n"
+            "/now bir tarama\n"
+            "/top en yuksek hacimli\n"
             "/balance bakiye goster"
         ))
     elif t == "/on":
@@ -297,74 +331,39 @@ def handle(cid, text):
         scan(cid)
     elif t == "/top":
         load_products()
-        lines = }  ${p /1e6:.1f}M  {p :+.1f}%"
-                 for i, p in enumerate(products[:15])]
+        lines = [
+            f"{i+1}. {p['base']}  ${p['vol']/1e6:.1f}M  {p['chg']:+.1f}%"
+            for i, p in enumerate(products[:15])
+        ]
         send(cid, "EN YUKSEK HACIM\n" + "\n".join(lines))
     elif t == "/balance":
         send(cid, f"Bakiye: ${balance:.2f} | Risk/islem: %{RISK_PCT}")
-    elif t == "/backtest":
-        send(cid, backtest_report())
     else:
-        send(cid, "/on /off /now /top /backtest /balance")
-
-
-def backtest_report() -> str:
-    wins = losses = 0
-    samples = 0
-    for p in products[:20]:
-        cs = candles(p , gran="FIFTEEN_MINUTE", n=2000)
-        if len(cs) < 50:
-            continue
-        for i in range(20, len(cs) - 4):
-            window = cs last = window[-1 "open"] * 100 if last else 0
-            rv = rvol(window)
-            if abs(move) < ENTRY_MOVE or rv < RVOL_MIN:
-                continue
-            bias = "LONG" if move > 0 else "SHORT"
-            entry = last t = targets(entry, bias)
-            future = cs[i+1:i+5]
-            if not future:
-                continue
-            hi = max(c for c in future)
-            lo = min(c for c in future)
-            if bias == "LONG":
-                hit = hi >= t else:
-                hit = lo <= t if hit:
-                wins += 1
-            else:
-                losses += 1
-            samples += 1
-            if samples >= 200:
-                break
-        if samples >= 200:
-            break
-    if samples == 0:
-        return "Backtest: yeterli veri yok (Coinbase baglantisi lazim)."
-    wr = wins / samples * 100
-    return (f"📊 *BACKTEST* (son ~30g, {samples} sinyal)\n"
-            f"Basarili: {wins} | Basarisiz: {losses}\n"
-            f"Kazanma orani: %{wr:.1f}\n"
-            f"Kural: 15m hareket >%{ENTRY_MOVE}, rVol >{RVOL_MIN}, hedef +%{PP1_PCT}")
+        send(cid, "/on /off /now /top /balance")
 
 
 def main():
     print(f"SCALP JET V{VERSION}")
     if DRY_RUN:
         load_products()
-        print("urun", len(products), [p["base" :8])
+        print("urun", len(products), [p["base"] for p in products[:8]])
         scan(0)
         return
     offset = 0
     while True:
         try:
-            r = session.get(f"{TG}/getUpdates", params={"offset": offset, "timeout": 10}, timeout=15)
+            r = session.get(
+                f"{TG}/getUpdates",
+                params={"offset": offset, "timeout": 10},
+                timeout=15,
+            )
             if r.status_code == 200:
                 data = r.json()
                 for u in data.get("result", []):
-                    offset = u + 1
-                    msg = u.get("message") or
+                    offset = u["update_id"] + 1
+                    msg = u.get("message") or {}
                     if msg.get("text"):
-                        handle(msg  , msg )
+                        handle(msg["chat"]["id"], msg["text"])
             if chat_id and time.time() - last_scan >= SCAN_SEC:
                 scan(chat_id)
             time.sleep(1)
