@@ -29,7 +29,7 @@ except Exception as e:
     HAS_VISUALS = False
     print("Gorsel kutuphane yok, sadece metin:", e)
 
-VERSION = "18.0"
+VERSION = "18.3"
 
 DRY_RUN = os.getenv("CRYPTOJET_DRYRUN", "").strip().lower() in {"1", "true", "yes"}
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -175,6 +175,14 @@ USE_CG = True
 _cg_strikes = 0
 scan_busy = False
 scan_lock = threading.Lock()
+live_chat_id: Optional[int] = None
+live_last = 0.0
+LIVE_INTERVAL = float(os.getenv("LIVE_INTERVAL", "8"))
+LIVE_MOVE = float(os.getenv("LIVE_MOVE", "0.0015"))  # %0.15
+live_px: Dict[str, Dict] = {}
+live_trade_cd: Dict[str, float] = {}
+LIVE_WATCH = ["BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "DOGE-USD"]
+LIVE_TRADE_CD = 900
 SKIP_SYM = {"USD", "USDC", "USDT", "DAI", "EUR", "GBP", "PYUSD", "FDUSD", "TUSD", "USDE", "USDS"}
 STABLE_IDS = {"tether", "usd-coin", "binance-usd", "dai", "first-digital-usd", "true-usd", "ethena-usde"}
 GECKO_ALIAS = {
@@ -1008,6 +1016,101 @@ def make_alert_gif(r: Result) -> Optional[bytes]:
     return buf.getvalue()
 
 
+def _pct(v, digits=2) -> str:
+    try:
+        return f"{float(v):+.{digits}f}%"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _pos_col(pos: str) -> str:
+    if pos.startswith("UYGUN "):
+        return "#3dd68c"
+    if pos.startswith("KOŞULLU") or pos.startswith("KOSULLU"):
+        return "#ffcc66"
+    return "#8b9bb4"
+
+
+def _draw_radar_frame(results: List[Result], market: Dict, t: float) -> "Image.Image":
+    rows = results[:12]
+    w, header_h, row_h = 1100, 168, 42
+    h = header_h + 36 + row_h * max(len(rows), 1) + 28
+    img = Image.new("RGB", (w, h), "#070b10")
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle([10, 10, w - 10, h - 10], 22, outline="#1e2a3c", width=2)
+    title_f, mid_f, small_f = _font(26), _font(16), _font(14)
+    d.text((28, 22), f"CRYPTO JET RADAR  V{VERSION}", font=title_f, fill="#e8eef7")
+    meta = (
+        f"BTC 24s {_pct(market.get('btc_change'))}   "
+        f"BTC 15m {_pct(market.get('btc_15m'))}   "
+        f"Rejim {market.get('regime')}   "
+        f"BTC.D {safe_float(market.get('dominance')):.2f}%   "
+        f"F&G {market.get('fng')} {market.get('fng_label')}"
+    )
+    d.text((28, 58), meta, font=small_f, fill="#9fb3c8")
+    d.text((28, 82), f"Taranan {len(results)} coin   |   Tablo gercek yuzde degerleri", font=small_f, fill="#6e7d93")
+
+    cols = [
+        (28, "COIN"), (130, "POZISYON"), (300, "SKOR"), (400, "GUVEN"),
+        (500, "15M"), (590, "24S"), (680, "vsBTC"), (780, "rVOL"),
+        (870, "1H"), (940, "4H"), (1010, "1D"),
+    ]
+    y0 = 118
+    d.rectangle([20, y0, w - 20, y0 + 28], fill="#121a26")
+    for x, name in cols:
+        d.text((x, y0 + 6), name, font=small_f, fill="#9fb3c8")
+
+    show_n = max(1, int(round(len(rows) * t)))
+    for i, r in enumerate(rows[:show_n]):
+        y = 150 + i * row_h
+        bg = "#101722" if i % 2 == 0 else "#0c121a"
+        d.rectangle([20, y, w - 20, y + row_h - 4], fill=bg)
+        pos = r.position.replace("Ü", "U").replace("Ş", "S").replace("İ", "I")
+        col = _pos_col(r.position)
+        chg24 = r.product.get("chg_24h", 0.0)
+        d15 = r.early.get("direction") or r.decision
+        p15 = safe_float(r.early.get("pct")) * (-1 if d15 == "SHORT" else 1)
+        vals = [
+            (28, r.product["base"], "#e8eef7"),
+            (130, pos, col),
+            (300, f"{r.score}/1000", "#e8eef7"),
+            (400, f"%{r.confidence:.0f}", "#7aa2f7"),
+            (500, _pct(p15), "#3dd68c" if p15 >= 0 else "#f07178"),
+            (590, _pct(chg24), "#3dd68c" if safe_float(chg24) >= 0 else "#f07178"),
+            (680, _pct(r.rel_btc), "#3dd68c" if r.rel_btc >= 0 else "#f07178"),
+            (780, f"{safe_float(r.early.get('rvol'), 0):.2f}x", "#c5d0e0"),
+            (870, r.tf_bias.get("1H", "-")[:5], "#c5d0e0"),
+            (940, r.tf_bias.get("4H", "-")[:5], "#c5d0e0"),
+            (1010, r.tf_bias.get("1D", "-")[:5], "#c5d0e0"),
+        ]
+        for x, txt, c in vals:
+            d.text((x, y + 10), str(txt), font=small_f, fill=c)
+        # skor bari
+        bx, by, bw, bh = 300, y + 28, 90, 6
+        d.rounded_rectangle([bx, by, bx + bw, by + bh], 3, fill="#152033")
+        fw = int(bw * (r.score / 1000.0) * t)
+        d.rounded_rectangle([bx, by, bx + max(fw, 2), by + bh], 3, fill=col)
+    return img
+
+
+def make_radar_table(results: List[Result], market: Dict) -> Optional[bytes]:
+    if not HAS_VISUALS or not results:
+        return None
+    img = _draw_radar_frame(results, market, 1.0)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def make_radar_gif(results: List[Result], market: Dict) -> Optional[bytes]:
+    if not HAS_VISUALS or not results:
+        return None
+    frames = [_draw_radar_frame(results, market, (i + 1) / 8) for i in range(8)]
+    buf = io.BytesIO()
+    frames[0].save(buf, format="GIF", save_all=True, append_images=frames[1:], duration=110, loop=0)
+    return buf.getvalue()
+
+
 def caption_html(r: Result) -> str:
     checks = "\n".join(("✅ " if ok else "❌ ") + html.escape(n) for n, ok in r.checks)
     inv = fmt_price(r.invalidation)
@@ -1089,7 +1192,18 @@ def market_scan(chat_id=None, send_alerts=False, only=None) -> List[Result]:
     min_rank = LEVEL_RANK.get(AUTO_MIN_LEVEL, 2)
     if chat_id and send_alerts:
         for r in strong:
-            if LEVEL_RANK.get(r.level, 0) >= min_rank and should_alert(r):
+            move_ok = bool(r.early.get("active") or r.early.get("breakout") or safe_float(r.early.get("pct")) >= 0.18)
+            vol_ok = safe_float(r.early.get("rvol")) >= RVOL_OK
+            side = "AL" if r.decision == "LONG" else "SAT" if r.decision == "SHORT" else None
+            if side and move_ok and vol_ok and r.position != "UYGUN DEĞİL" and should_alert(r):
+                send_al_sat(
+                    chat_id, side, r.product["base"], r.price,
+                    safe_float(r.early.get("pct")) * (1 if side == "AL" else -1),
+                    f"rVol {safe_float(r.early.get('rvol')):.2f}x",
+                    f"{r.position}  skor {r.score}  güven %{r.confidence}",
+                )
+                push_visual(chat_id, r)
+            elif LEVEL_RANK.get(r.level, 0) >= min_rank and should_alert(r):
                 push_visual(chat_id, r)
     if chat_id:
         lines = [
@@ -1099,9 +1213,25 @@ def market_scan(chat_id=None, send_alerts=False, only=None) -> List[Result]:
             f"D {market['dominance']:.1f}% · F&amp;G {market['fng']} {html.escape(market['fng_label'])}",
             "",
         ]
-        for r in (strong[:15] if strong else results[:10]):
-            lines.append(f"<code>{html.escape(r.product['base']):<6}</code> {r.score:>4}  {html.escape(r.position)}")
+        show = strong[:12] if strong else results[:12]
+        for r in show:
+            p15 = safe_float(r.early.get("pct")) * (-1 if (r.early.get("direction") or r.decision) == "SHORT" else 1)
+            lines.append(
+                f"<code>{html.escape(r.product['base']):<6}</code> {r.score:>4}  "
+                f"{html.escape(r.position)}  15m {_pct(p15)}  24s {_pct(r.product.get('chg_24h'))}  "
+                f"vsBTC {_pct(r.rel_btc)}  rVol {safe_float(r.early.get('rvol')):.2f}x  "
+                f"guven %{r.confidence}"
+            )
         send_message(chat_id, "\n".join(lines))
+        table = show or results[:12]
+        gif = make_radar_gif(table, market)
+        png = make_radar_table(table, market)
+        if gif:
+            send_animation(chat_id, gif, f"<b>Radar tablo V{VERSION}</b> · gercek % degerleri")
+        if png:
+            send_photo(chat_id, png, f"<b>Radar tablo</b> BTC {_pct(market.get('btc_change'))} · D {safe_float(market.get('dominance')):.2f}%")
+            if DRY_RUN:
+                open("/home/workdir/artifacts/radar_table.png", "wb").write(png)
     return results
 
 
@@ -1129,7 +1259,7 @@ def start_scan(chat_id: int, send_alerts: bool = True) -> bool:
 
 
 def handle_command(chat_id: int, text: str):
-    global active_chat_id, last_scan_time
+    global active_chat_id, last_scan_time, live_chat_id, live_last
     t = text.strip().lower()
     print(f"KOMUT {chat_id}: {text}")
     if t == "/start":
@@ -1139,7 +1269,10 @@ def handle_command(chat_id: int, text: str):
 15m erken hareket + 1H/4H/1D onay
 BTC · BTC.D · Fear&amp;Greed · göreli güç
 
-/jet otomatik (ALARM+)
+/jet otomatik tarama
+/live anlık fiyat (8sn, %0.15+)
+/now anlık tablo
+/liveoff
 /scan  /top  /btc  /status  /stop
 
 Pozisyon: UYGUN · KOŞULLU · UYGUN DEĞİL
@@ -1165,13 +1298,128 @@ Rejim {html.escape(m['regime'])}
 BTC.D {m['dominance']:.2f}%  {html.escape(m['dom_bias'])}
 Fear&amp;Greed {m['fng']}  {html.escape(m['fng_label'])}
 """.strip())
+    elif t == "/live":
+        live_chat_id = chat_id
+        live_px.clear()
+        send_message(chat_id, f"Canlı takip açık. Her {LIVE_INTERVAL:.0f}sn Coinbase fiyat. Eşik {_pct(LIVE_MOVE*100)}.", html_mode=False)
+        live_last = 0.0
+        live_tick()
+    elif t == "/now":
+        old = live_chat_id
+        live_chat_id = chat_id
+        # force snapshot
+        lines = ["ANLIK"]
+        for pid in live_products()[:8]:
+            px = fetch_spot(pid)
+            if not px:
+                continue
+            st = live_px.get(pid)
+            sess = ((px - st["base"]) / st["base"] * 100) if st else 0.0
+            chg24 = ""
+            lines.append(f"{pid.replace('-USD',''):<6} {fmt_price(px)}  oturum {_pct(sess)}")
+        send_message(chat_id, "\n".join(lines), html_mode=False)
+        live_chat_id = old or chat_id
+    elif t == "/liveoff":
+        live_chat_id = None
+        send_message(chat_id, "Canlı takip kapandı.", html_mode=False)
     elif t == "/status":
-        send_message(chat_id, f"V{VERSION} {'AÇIK' if active_chat_id else 'KAPALI'}\nCoin {len(get_products())}\nMin {AUTO_MIN_LEVEL}")
+        send_message(chat_id, f"V{VERSION} jet={'AÇIK' if active_chat_id else 'KAPALI'} live={'AÇIK' if live_chat_id else 'KAPALI'}\nCoin {len(products_cache) or len(get_products())}\nMin {AUTO_MIN_LEVEL}")
     elif t == "/stop":
         active_chat_id = None
+        live_chat_id = None
         send_message(chat_id, "Durdu.")
     elif t.startswith("/"):
-        send_message(chat_id, "/jet /scan /top /btc /status /stop")
+        send_message(chat_id, "/jet /live /now /liveoff /scan /top /btc /status /stop")
+
+
+def live_products() -> List[str]:
+    ids = list(LIVE_WATCH)
+    for p in products_cache[:8]:
+        pid = f"{p['base']}-USD"
+        if pid not in ids:
+            ids.append(pid)
+    return ids[:12]
+
+
+def fetch_spot(product_id: str) -> Optional[float]:
+    data = adv_get(f"/market/products/{product_id}")
+    if isinstance(data, dict):
+        px = safe_float(data.get("price"))
+        return px if px > 0 else None
+    return None
+
+
+def fetch_spot_full(product_id: str) -> Optional[Dict]:
+    data = adv_get(f"/market/products/{product_id}")
+    if not isinstance(data, dict):
+        return None
+    px = safe_float(data.get("price"))
+    if px <= 0:
+        return None
+    return {
+        "price": px,
+        "vol": safe_float(data.get("volume_24h")),
+        "chg24": safe_float(data.get("price_percentage_change_24h")),
+    }
+
+
+def send_al_sat(chat_id, side: str, coin: str, price: float, move_pct: float, vol_txt: str, extra: str = ""):
+    if side == "AL":
+        head = "AL POZİSYON"
+    else:
+        head = "SAT POZİSYON"
+    text = (
+        f"{head}\n"
+        f"{coin}\n"
+        f"Fiyat {fmt_price(price)}\n"
+        f"Hareket {_pct(move_pct)}\n"
+        f"Hacim {vol_txt}\n"
+        f"{extra}"
+    ).strip()
+    send_message(chat_id, text, html_mode=False)
+
+
+def live_tick():
+    global live_last
+    if not live_chat_id:
+        return
+    now = time.time()
+    if now - live_last < LIVE_INTERVAL:
+        return
+    live_last = now
+    for pid in live_products():
+        info = fetch_spot_full(pid)
+        if not info:
+            continue
+        px, vol = info["price"], info["vol"]
+        st = live_px.get(pid)
+        if not st:
+            live_px[pid] = {"px": px, "t": now, "hi": px, "lo": px, "base": px, "vol": vol}
+            continue
+        last = st["px"]
+        chg = (px - last) / last if last else 0.0
+        sess = (px - st["base"]) / st["base"] if st["base"] else 0.0
+        vol_up = vol > st.get("vol", 0) * 1.002 if st.get("vol", 0) > 0 else False
+        st["px"], st["hi"], st["lo"], st["t"], st["vol"] = px, max(st["hi"], px), min(st["lo"], px), now, vol
+        if abs(chg) < LIVE_MOVE:
+            continue
+        prev_cd = live_trade_cd.get(pid, 0)
+        if now - prev_cd < LIVE_TRADE_CD:
+            continue
+        if not vol_up and abs(chg) < LIVE_MOVE * 2:
+            send_message(
+                live_chat_id,
+                f"HAREKET HACIM YOK\n{pid.replace('-USD','')} {_pct(chg*100)} {fmt_price(px)}",
+                html_mode=False,
+            )
+            continue
+        side = "AL" if chg > 0 else "SAT"
+        live_trade_cd[pid] = now
+        send_al_sat(
+            live_chat_id, side, pid.replace("-USD", ""), px, chg * 100,
+            "arttı (24s hacim yükseliyor)" if vol_up else "zayıf ama hareket büyük",
+            f"Oturum {_pct(sess*100)}  24s {_pct(info['chg24'])}",
+        )
 
 
 def automatic_scan():
@@ -1215,6 +1463,7 @@ def main():
                 if msg.get("text"):
                     handle_command(msg["chat"]["id"], msg["text"])
             automatic_scan()
+            live_tick()
             time.sleep(1)
         except KeyboardInterrupt:
             break
