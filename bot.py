@@ -535,15 +535,16 @@ def analyze(product: Dict, market: Dict) -> Optional[Result]:
     score *= multiplier
     score = int(clamp(score, 0, 1000))
 
-    # Karar — Compression tek başına da WATCH verebilir
+    # Karar
     if micro["active"]:
         decision = micro["direction"]
-    elif comp >= 68:
+    elif comp >= 70 and score >= 420:
+        # Sadece sıkışma yüksek + skor da makul seviyedeyse WATCH
         decision = "WATCH"
     else:
         decision = "BEKLE"
 
-    # Seviye
+    # Seviye (skora göre belirlenir, decision'a körü körüne bağlı değil)
     if score >= EXTREME_MIN:
         level = "EXTREME"
     elif score >= ELITE_MIN:
@@ -552,7 +553,7 @@ def analyze(product: Dict, market: Dict) -> Optional[Result]:
         level = "STRONG"
     elif score >= ALARM_MIN:
         level = "ALARM"
-    elif score >= WATCH_MIN or decision == "WATCH":
+    elif score >= WATCH_MIN:
         level = "WATCH"
     else:
         level = "NONE"
